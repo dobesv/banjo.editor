@@ -49,4 +49,5 @@ public class BanjoConfiguration extends SourceViewerConfiguration {
 		// Hard-coded for 2 spaces for now
 		return new String[] {"  ", " ", ""};
 	}
+
 }

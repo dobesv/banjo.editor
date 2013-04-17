@@ -1,5 +1,10 @@
 package banjo.editor;
 
+import java.io.IOException;
+import java.io.UnsupportedEncodingException;
+
+import org.eclipse.core.runtime.IStatus;
+import org.eclipse.core.runtime.Status;
 import org.eclipse.jface.resource.ImageDescriptor;
 import org.eclipse.ui.plugin.AbstractUIPlugin;
 import org.osgi.framework.BundleContext;
@@ -58,4 +63,22 @@ public class Activator extends AbstractUIPlugin {
 	public static ImageDescriptor getImageDescriptor(String path) {
 		return imageDescriptorFromPlugin(PLUGIN_ID, path);
 	}
+	
+	public static void log(IStatus status) {
+		Activator.getDefault().getLog().log(status);
+	}
+
+	public static void log(Throwable e) {
+		log(new Status(IStatus.ERROR, PLUGIN_ID, e.getMessage(), e));
+	}
+
+	public static void log(String message, IOException e) {
+		log(new Status(IStatus.ERROR, PLUGIN_ID, message, e));
+		
+	}
+
+	public static void log(String message) {
+		log(new Status(IStatus.ERROR, PLUGIN_ID, message));
+	}
+	
 }

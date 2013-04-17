@@ -13,5 +13,110 @@
             id="banjo.editors.BanjoEditor">
       </editor>
    </extension>
+   <extension
+         id="banjoProblem"
+         name="Banjo Problem"
+         point="org.eclipse.core.resources.markers">
+         <super type="org.eclipse.core.resources.problemmarker"/>
+         <super
+               type="org.eclipse.core.resources.textmarker">
+         </super> 
+         <persistent value="true"/>
+   </extension>
+   <extension
+         id="banjoBuilder"
+         name="Banjo Project Builder"
+         point="org.eclipse.core.resources.builders">
+      <builder
+            hasNature="true">
+         <run
+               class="banjo.builder.BanjoBuilder">
+         </run>
+      </builder>
+   </extension>
+   <extension
+         id="banjoNature"
+         name="Banjo Project Nature"
+         point="org.eclipse.core.resources.natures">
+      <runtime>
+         <run
+               class="banjo.builder.BanjoNature">
+         </run>
+      </runtime>
+      <builder
+            id="banjo.editor.banjoBuilder">
+      </builder>
+   </extension>
+   <extension
+         point="org.eclipse.ui.menus">
+      <menuContribution
+            locationURI="popup:org.eclipse.ui.projectConfigure?after=additions">
+         <command
+               commandId="banjo.editor.addRemoveBanjoNature"
+               label="Remove Banjo Nature"
+               style="push">
+            <visibleWhen
+                  checkEnabled="false">
+               <with
+                     variable="selection">
+                  <count
+                        value="1">
+                  </count>
+                  <iterate>
+                     <and>
+                        <instanceof
+                              value="org.eclipse.core.resources.IProject">
+                        </instanceof>
+                        <test
+                              property="org.eclipse.core.resources.projectNature"
+                              value="banjo.editor.banjoNature">
+                        </test>
+                     </and>
+                  </iterate>
+               </with>
+            </visibleWhen>
+         </command>
+         <command
+               commandId="banjo.editor.addRemoveBanjoNature"
+               label="Convert to Banjo Project"
+               style="push">
+            <visibleWhen
+                  checkEnabled="false">
+               <with
+                     variable="selection">
+                  <count
+                        value="1">
+                  </count>
+                  <iterate>
+                     <and>
+                        <instanceof
+                              value="org.eclipse.core.resources.IProject">
+                        </instanceof>
+                        <not>
+                           <test
+                                 property="org.eclipse.core.resources.projectNature"
+                                 value="banjo.editor.banjoNature">
+                           </test>
+                        </not>
+                     </and>
+                  </iterate>
+               </with>
+            </visibleWhen>
+         </command>
+      </menuContribution>
+   </extension>
+   <extension
+         point="org.eclipse.ui.commands">
+      <category
+            id="banjo.editor.banjoNature.category"
+            name="Banjo Project Nature commands">
+      </category>
+      <command
+            categoryId="banjo.editor.banjoNature.category"
+            defaultHandler="banjo.builder.AddRemoveBanjoNatureHandler"
+            id="banjo.editor.addRemoveBanjoNature"
+            name="Add/Remove Banjo Project Nature">
+      </command>
+   </extension>
 
 </plugin>
