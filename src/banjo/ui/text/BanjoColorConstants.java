@@ -17,5 +17,6 @@ public interface BanjoColorConstants {
 	RGB NUMBER_LITERAL = new RGB(42,0,255);
 	RGB IDENTIFIER = new RGB(0, 0, 0);
 	RGB DEFAULT = new RGB(0, 0, 0);
+	RGB FIELD = new RGB(0,0,192);
 	RGB OPERATOR = new RGB(0, 0, 0);
 }

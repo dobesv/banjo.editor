@@ -15,6 +15,7 @@ import banjo.dom.Comment;
 import banjo.dom.Ellipsis;
 import banjo.dom.HasFileRange;
 import banjo.dom.Identifier;
+import banjo.dom.Key;
 import banjo.dom.NumberLiteral;
 import banjo.dom.OperatorRef;
 import banjo.dom.StringLiteral;
@@ -37,6 +38,7 @@ public class SourceScanner implements ITokenScanner, TokenVisitor<IToken> {
 	final IToken identifierToken;
 	final IToken stringLiteralToken;
 	final IToken numberLiteralToken;
+	final IToken fieldToken;
 	final IToken defaultToken;
 	private final BanjoScanner scanner = new BanjoScanner();
 	private ParserReader in = null;
@@ -44,6 +46,8 @@ public class SourceScanner implements ITokenScanner, TokenVisitor<IToken> {
 	private int tokenOffset;
 
 	private int tokenLength;
+
+	private boolean inProjection;
 	
 	public SourceScanner(BanjoColorManager manager) {
 		commentToken = new Token(new TextAttribute(manager.getColor(BanjoColorConstants.COMMENT)));
@@ -51,6 +55,7 @@ public class SourceScanner implements ITokenScanner, TokenVisitor<IToken> {
 		identifierToken = new Token(new TextAttribute(manager.getColor(BanjoColorConstants.IDENTIFIER)));
 		stringLiteralToken = new Token(new TextAttribute(manager.getColor(BanjoColorConstants.STRING_LITERAL)));
 		numberLiteralToken = new Token(new TextAttribute(manager.getColor(BanjoColorConstants.NUMBER_LITERAL)));
+		fieldToken = new Token(new TextAttribute(manager.getColor(BanjoColorConstants.FIELD)));
 		defaultToken = new Token(new TextAttribute(manager.getColor(BanjoColorConstants.DEFAULT)));
 	}
 
@@ -111,11 +116,17 @@ public class SourceScanner implements ITokenScanner, TokenVisitor<IToken> {
 	IToken token(IToken token, int offset, int length) {
 		this.tokenOffset = offset;
 		this.tokenLength = length;
+		if(token != Token.WHITESPACE && token != commentToken)
+			inProjection = false;
 		return token;
 	}
 	
 	IToken token(IToken token, HasFileRange sourceToken) {
 		return token(token, sourceToken.getStartOffset(), sourceToken.getFileRange().length());
+	}
+	
+	IToken token(IToken normalToken, IToken fieldToken, Key key) {
+		return token(inProjection?fieldToken:normalToken, key);
 	}
 	
 	@Override
@@ -135,12 +146,16 @@ public class SourceScanner implements ITokenScanner, TokenVisitor<IToken> {
 
 	@Override
 	public IToken visitOperator(OperatorRef or) {
-		return token(operatorToken, or);
+		IToken result = token(operatorToken, or);
+		if(or.getOp().equals(".")) {
+			inProjection = true;
+		}
+		return result;
 	}
 
 	@Override
 	public IToken visitStringLiteral(StringLiteral lit) {
-		return token(stringLiteralToken, lit);
+		return token(stringLiteralToken, fieldToken, lit);
 	}
 
 	@Override
@@ -150,7 +165,7 @@ public class SourceScanner implements ITokenScanner, TokenVisitor<IToken> {
 
 	@Override
 	public IToken visitIdentifier(Identifier ident) {
-		return token(identifierToken, ident);
+		return token(identifierToken, fieldToken, ident);
 	}
 
 	@Override
