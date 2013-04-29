@@ -20,11 +20,13 @@ import org.eclipse.core.resources.IResourceVisitor;
 import org.eclipse.core.resources.IncrementalProjectBuilder;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
+import org.eclipse.core.runtime.QualifiedName;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 import org.xml.sax.helpers.DefaultHandler;
 
 import banjo.desugar.BanjoDesugarer;
+import banjo.dom.CoreExpr;
 import banjo.dom.SourceExpr;
 import banjo.editor.Activator;
 import banjo.parser.BanjoParser;
@@ -33,7 +35,7 @@ import banjo.parser.util.ParserReader;
 
 public class BanjoBuilder extends IncrementalProjectBuilder {
 
-	class BanjoErrorCheckingDeltaVisitor implements IResourceDeltaVisitor {
+	class BanjoBuilderDeltaVisitor implements IResourceDeltaVisitor {
 		/*
 		 * (non-Javadoc)
 		 * 
@@ -44,14 +46,14 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 			switch (delta.getKind()) {
 			case IResourceDelta.ADDED:
 				// handle added resource
-				checkForErrors(resource);
+				build(resource);
 				break;
 			case IResourceDelta.REMOVED:
 				// handle removed resource
 				break;
 			case IResourceDelta.CHANGED:
 				// handle changed resource
-				checkForErrors(resource);
+				build(resource);
 				break;
 			}
 			//return true to continue visiting children.
@@ -59,9 +61,9 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 		}
 	}
 
-	class BanjoErrorCheckingResourceVisitor implements IResourceVisitor {
+	class BanjoBuilderResourceVisitor implements IResourceVisitor {
 		public boolean visit(IResource resource) {
-			checkForErrors(resource);
+			build(resource);
 			//return true to continue visiting children.
 			return true;
 		}
@@ -69,7 +71,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 
 	public static final String BUILDER_ID = "banjo.editor.banjoBuilder";
 	private static final String MARKER_TYPE = IMarker.PROBLEM;
-	
+	public static final QualifiedName AST_CACHE_PROPERTY = new QualifiedName(Activator.PLUGIN_ID, "astCache"); 
 	private void addMarker(IFile file, BanjoParseException err) {
 		try {
 			IMarker marker = file.createMarker(MARKER_TYPE);
@@ -108,12 +110,23 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 	protected void clean(IProgressMonitor monitor) throws CoreException {
 		// delete markers set and files created
 		getProject().deleteMarkers(MARKER_TYPE, true, IResource.DEPTH_INFINITE);
+		getProject().accept(new IResourceVisitor() {
+			
+			@Override
+			public boolean visit(IResource resource) throws CoreException {
+				if(resource instanceof IFile) {
+					clearAstCache((IFile)resource);
+				}
+				return true;
+			}
+		});
 	}
 
-	void checkForErrors(IResource resource) {
+	void build(IResource resource) {
 		if (resource instanceof IFile && resource.getName().endsWith(".banjo")) {
 			IFile file = (IFile) resource;
 			deleteMarkers(file);
+			clearAstCache(file);
 			BanjoParser parser = new BanjoParser();
 			IFileInfo fileInfo;
 			try {
@@ -143,8 +156,15 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 				Collection<BanjoParseException> errors = parser.getErrors();
 				if(errors.isEmpty()) {
 					BanjoDesugarer desugarer = new BanjoDesugarer();
-					desugarer.desugar(sourceExpr);
+					CoreExpr ast = desugarer.desugar(sourceExpr);
 					errors = desugarer.getErrors();
+					if(errors.isEmpty()) {
+						try {
+							file.setSessionProperty(AST_CACHE_PROPERTY, ast);
+						} catch (CoreException e) {
+							Activator.log(e.getStatus());
+						}
+					}
 				}
 				for(BanjoParseException error : errors) {
 					addMarker(file, error);
@@ -157,23 +177,31 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 	}
 
 
+	public static void clearAstCache(IFile file) {
+		try {
+			file.setSessionProperty(AST_CACHE_PROPERTY, null);
+		} catch (CoreException e) {
+			Activator.log(e.getStatus());
+		}
+	}
+
 	private void deleteMarkers(IFile file) {
 		try {
 			file.deleteMarkers(MARKER_TYPE, false, IResource.DEPTH_ZERO);
 		} catch (CoreException ce) {
+			Activator.log(ce.getStatus());
 		}
 	}
 
-	protected void fullBuild(final IProgressMonitor monitor)
-			throws CoreException {
+	protected void fullBuild(final IProgressMonitor monitor) {
 		try {
-			getProject().accept(new BanjoErrorCheckingResourceVisitor());
+			getProject().accept(new BanjoBuilderResourceVisitor());
 		} catch (CoreException e) {
+			Activator.log(e.getStatus());
 		}
 	}
 
-	protected void incrementalBuild(IResourceDelta delta,
-			IProgressMonitor monitor) throws CoreException {
-		delta.accept(new BanjoErrorCheckingDeltaVisitor());
+	protected void incrementalBuild(IResourceDelta delta, IProgressMonitor monitor) throws CoreException {
+		delta.accept(new BanjoBuilderDeltaVisitor());
 	}
 }

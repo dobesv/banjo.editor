@@ -19,7 +19,6 @@ import banjo.dom.TokenVisitor;
 import banjo.dom.UnitRef;
 import banjo.dom.Whitespace;
 import banjo.parser.BanjoScanner;
-import banjo.parser.util.FilePos;
 import banjo.parser.util.FileRange;
 import banjo.parser.util.ParserReader;
 
@@ -51,7 +50,7 @@ public class BanjoDoubleClickStrategy extends DefaultTextDoubleClickStrategy {
 		}
 
 		@Override
-		public IRegion visitEof(FilePos endPos) {
+		public IRegion visitEof(FileRange entireFileRange) {
 			return result;
 		}
 

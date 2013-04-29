@@ -9,7 +9,7 @@
             extensions="banjo"
             icon="icons/sample.gif"
             contributorClass="org.eclipse.ui.texteditor.BasicTextEditorActionContributor"
-            class="banjo.ui.text.SourceEditor"
+            class="banjo.ui.text.BanjoSourceEditor"
             id="banjo.editors.BanjoEditor">
       </editor>
    </extension>
