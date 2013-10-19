@@ -1,12 +1,11 @@
 package banjo.builder;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.Reader;
 import java.io.UnsupportedEncodingException;
-import java.util.Collection;
 import java.util.Map;
-
-import javax.xml.parsers.SAXParserFactory;
 
 import org.eclipse.core.filesystem.EFS;
 import org.eclipse.core.filesystem.IFileInfo;
@@ -21,28 +20,31 @@ import org.eclipse.core.resources.IncrementalProjectBuilder;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.QualifiedName;
-import org.xml.sax.SAXException;
-import org.xml.sax.SAXParseException;
-import org.xml.sax.helpers.DefaultHandler;
 
+import banjo.analysis.DefRefAnalyser;
+import banjo.analysis.DefRefAnalyser.Analysis;
+import banjo.analysis.DefRefAnalyser.SourceRangeAnalysis;
 import banjo.desugar.BanjoDesugarer;
-import banjo.dom.CoreExpr;
-import banjo.dom.SourceExpr;
+import banjo.desugar.BanjoDesugarer.DesugarResult;
+import banjo.dom.BadExpr;
+import banjo.dom.core.CoreExpr;
 import banjo.editor.Activator;
 import banjo.parser.BanjoParser;
-import banjo.parser.errors.BanjoParseException;
+import banjo.parser.BanjoParser.ExtSourceExpr;
+import banjo.parser.util.FileRange;
 import banjo.parser.util.ParserReader;
+import fj.P2;
 
 public class BanjoBuilder extends IncrementalProjectBuilder {
-
 	class BanjoBuilderDeltaVisitor implements IResourceDeltaVisitor {
 		/*
 		 * (non-Javadoc)
 		 * 
 		 * @see org.eclipse.core.resources.IResourceDeltaVisitor#visit(org.eclipse.core.resources.IResourceDelta)
 		 */
+		@Override
 		public boolean visit(IResourceDelta delta) throws CoreException {
-			IResource resource = delta.getResource();
+			final IResource resource = delta.getResource();
 			switch (delta.getKind()) {
 			case IResourceDelta.ADDED:
 				// handle added resource
@@ -62,6 +64,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 	}
 
 	class BanjoBuilderResourceVisitor implements IResourceVisitor {
+		@Override
 		public boolean visit(IResource resource) {
 			build(resource);
 			//return true to continue visiting children.
@@ -71,18 +74,30 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 
 	public static final String BUILDER_ID = "banjo.editor.banjoBuilder";
 	private static final String MARKER_TYPE = IMarker.PROBLEM;
-	public static final QualifiedName AST_CACHE_PROPERTY = new QualifiedName(Activator.PLUGIN_ID, "astCache"); 
-	private void addMarker(IFile file, BanjoParseException err) {
+	public static final QualifiedName AST_CACHE_PROPERTY = new QualifiedName(Activator.PLUGIN_ID, "astCache");
+	private static void addMarker(IFile file, String message, FileRange range, int severity) {
 		try {
-			IMarker marker = file.createMarker(MARKER_TYPE);
-			marker.setAttribute(IMarker.MESSAGE, err.getMessage());
-			marker.setAttribute(IMarker.SEVERITY, IMarker.SEVERITY_ERROR);
-			
-			marker.setAttribute(IMarker.LINE_NUMBER, err.getStartLine());
-			marker.setAttribute(IMarker.CHAR_START, err.getStartOffset());
-			marker.setAttribute(IMarker.CHAR_END, err.getEndOffset());
-		} catch (CoreException e) {
+			final IMarker marker = file.createMarker(MARKER_TYPE);
+			marker.setAttribute(IMarker.MESSAGE, message);
+			marker.setAttribute(IMarker.SEVERITY, severity);
+			marker.setAttribute(IMarker.LINE_NUMBER, range.getStartLine());
+			marker.setAttribute(IMarker.CHAR_START, range.getStartOffset());
+			marker.setAttribute(IMarker.CHAR_END, range.getEndOffset());
+		} catch (final CoreException e) {
 			Activator.log(e.getStatus());
+		}
+	}
+
+	public static int calculateLineNumber(IFile file, final int sourceOffset)
+			throws CoreException, IOException, UnsupportedEncodingException {
+		final long fileLength = EFS.getStore(file.getLocationURI()).fetchInfo().getLength();
+		final ParserReader in = new ParserReader(new InputStreamReader(file.getContents(), file.getCharset()), "", (int) fileLength);
+		try {
+			in.skip(sourceOffset);
+			final int lineNo = in.getCurrentLineNumber();
+			return lineNo;
+		} finally {
+			in.close();
 		}
 	}
 
@@ -92,12 +107,13 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 	 * @see org.eclipse.core.internal.events.InternalBuilder#build(int,
 	 *      java.util.Map, org.eclipse.core.runtime.IProgressMonitor)
 	 */
-	protected IProject[] build(int kind, Map args, IProgressMonitor monitor)
+	@Override
+	protected IProject[] build(int kind, @SuppressWarnings("rawtypes") Map args, IProgressMonitor monitor)
 			throws CoreException {
 		if (kind == FULL_BUILD) {
 			fullBuild(monitor);
 		} else {
-			IResourceDelta delta = getDelta(getProject());
+			final IResourceDelta delta = getDelta(getProject());
 			if (delta == null) {
 				fullBuild(monitor);
 			} else {
@@ -107,11 +123,12 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 		return null;
 	}
 
+	@Override
 	protected void clean(IProgressMonitor monitor) throws CoreException {
 		// delete markers set and files created
 		getProject().deleteMarkers(MARKER_TYPE, true, IResource.DEPTH_INFINITE);
 		getProject().accept(new IResourceVisitor() {
-			
+
 			@Override
 			public boolean visit(IResource resource) throws CoreException {
 				if(resource instanceof IFile) {
@@ -124,55 +141,77 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 
 	void build(IResource resource) {
 		if (resource instanceof IFile && resource.getName().endsWith(".banjo")) {
-			IFile file = (IFile) resource;
+			final IFile file = (IFile) resource;
 			deleteMarkers(file);
 			clearAstCache(file);
-			BanjoParser parser = new BanjoParser();
+			final BanjoParser parser = new BanjoParser();
 			IFileInfo fileInfo;
 			try {
 				fileInfo = EFS.getStore(file.getLocationURI()).fetchInfo();
-			} catch (CoreException e) {
+			} catch (final CoreException e) {
 				Activator.log(e.getStatus());
 				return;
 			}
-			InputStreamReader reader;
+			Reader reader;
 			try {
-				reader = new InputStreamReader(file.getContents(true), file.getCharset());
-			} catch (UnsupportedEncodingException e) {
+				reader = new BufferedReader(new InputStreamReader(file.getContents(true), file.getCharset()));
+			} catch (final UnsupportedEncodingException e) {
 				Activator.log(e);
 				return;
-			} catch (CoreException e) {
+			} catch (final CoreException e) {
 				Activator.log(e.getStatus());
 				return;
 			}
 			if(fileInfo.getLength() > Integer.MAX_VALUE) {
-				// TODO Report error 
+				// TODO Report error
 				Activator.log("File too large to parse; files must be less than 2GB.");
 				return;
 			}
-			
+
 			try {
-				SourceExpr sourceExpr = parser.parse(new ParserReader(reader, file.getName(), (int)fileInfo.getLength()));
-				Collection<BanjoParseException> errors = parser.getErrors();
-				if(errors.isEmpty()) {
-					BanjoDesugarer desugarer = new BanjoDesugarer();
-					CoreExpr ast = desugarer.desugar(sourceExpr);
-					errors = desugarer.getErrors();
-					if(errors.isEmpty()) {
-						try {
-							file.setSessionProperty(AST_CACHE_PROPERTY, ast);
-						} catch (CoreException e) {
-							Activator.log(e.getStatus());
-						}
-					}
-				}
-				for(BanjoParseException error : errors) {
-					addMarker(file, error);
-				}
-			} catch (IOException e) {
+				final ParserReader in = new ParserReader(reader, file.getName(), (int)fileInfo.getLength());
+				final ExtSourceExpr parseResult = parser.parse(in);
+				final BanjoDesugarer desugarer = new BanjoDesugarer(parseResult.getSourceMap());
+				final DesugarResult<CoreExpr> desugarResult = desugarer.desugar(parseResult.getExpr());
+				final Analysis defRefAnalysis = new DefRefAnalyser().analyse(file.getLocationURI(), desugarResult.getValue(), parseResult.getFileRange());
+				final SourceRangeAnalysis sourceRangeAnalysis = defRefAnalysis.calculateSourceRanges(desugarResult.getDesugarMap(), parseResult.getSourceMap());
+				addMarkers(file, in, parseResult, desugarResult,
+						sourceRangeAnalysis);
+			} catch (final IOException e) {
 				Activator.log("Error while reading "+file.getName(), e);
 				return;
 			}
+		}
+	}
+
+	public static void addMarkers(final IFile file, ParserReader in, final ExtSourceExpr parseResult,
+			final DesugarResult<CoreExpr> desugarResult,
+			final SourceRangeAnalysis sourceRangeAnalysis) {
+		try {
+			file.setSessionProperty(AST_CACHE_PROPERTY, desugarResult);
+		} catch (final CoreException e) {
+			Activator.log(e.getStatus());
+		}
+		for(final P2<FileRange,fj.data.Set<BadExpr>> problem : desugarResult.getProblems(parseResult.getSourceMap())) {
+			for(final BadExpr badExpr : problem._2()) {
+				addMarker(file, badExpr.getMessage(), problem._1(), IMarker.SEVERITY_ERROR);
+			}
+		}
+		// Also mark free variables, shadowing, unused variables
+		try {
+			for(final FileRange range : sourceRangeAnalysis.getFree()) {
+				addMarker(file, "Variable '"+in.readString(range)+"' undefined", range, IMarker.SEVERITY_ERROR);
+			}
+			for(final FileRange range : sourceRangeAnalysis.getShadowingDefs()) {
+				final String name = in.readString(range);
+				addMarker(file, "Variable '"+name+"' already defined", range, IMarker.SEVERITY_ERROR);
+			}
+			for(final FileRange range : sourceRangeAnalysis.getUnusedDefs()) {
+				final String name = in.readString(range);
+				addMarker(file, "Variable '"+name+"' never used", range, name.startsWith("_") ? IMarker.SEVERITY_INFO : IMarker.SEVERITY_ERROR);
+			}
+		} catch (final IOException e) {
+			Activator.log(e);
 		}
 	}
 
@@ -180,7 +219,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 	public static void clearAstCache(IFile file) {
 		try {
 			file.setSessionProperty(AST_CACHE_PROPERTY, null);
-		} catch (CoreException e) {
+		} catch (final CoreException e) {
 			Activator.log(e.getStatus());
 		}
 	}
@@ -188,7 +227,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 	private void deleteMarkers(IFile file) {
 		try {
 			file.deleteMarkers(MARKER_TYPE, false, IResource.DEPTH_ZERO);
-		} catch (CoreException ce) {
+		} catch (final CoreException ce) {
 			Activator.log(ce.getStatus());
 		}
 	}
@@ -196,7 +235,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 	protected void fullBuild(final IProgressMonitor monitor) {
 		try {
 			getProject().accept(new BanjoBuilderResourceVisitor());
-		} catch (CoreException e) {
+		} catch (final CoreException e) {
 			Activator.log(e.getStatus());
 		}
 	}

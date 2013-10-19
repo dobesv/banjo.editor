@@ -1,10 +1,9 @@
 package banjo.ui.text;
 
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.eclipse.core.runtime.Assert;
 import org.eclipse.jface.text.DocumentEvent;
@@ -14,32 +13,35 @@ import org.eclipse.jface.text.rules.IToken;
 import org.eclipse.jface.text.rules.ITokenScanner;
 import org.eclipse.jface.text.rules.Token;
 
-import banjo.analysis.DefInfo;
-import banjo.analysis.DefRefScanner;
+import banjo.analysis.DefRefAnalyser;
+import banjo.analysis.DefRefAnalyser.Analysis;
+import banjo.analysis.DefRefAnalyser.SourceRangeAnalysis;
 import banjo.desugar.BanjoDesugarer;
+import banjo.desugar.BanjoDesugarer.DesugarResult;
 import banjo.desugar.IncrementalUpdater;
-import banjo.dom.Comment;
-import banjo.dom.CoreExpr;
-import banjo.dom.Ellipsis;
-import banjo.dom.HasFileRange;
-import banjo.dom.Identifier;
-import banjo.dom.Key;
-import banjo.dom.NumberLiteral;
-import banjo.dom.OperatorRef;
-import banjo.dom.StringLiteral;
-import banjo.dom.TokenVisitor;
-import banjo.dom.UnitRef;
-import banjo.dom.Whitespace;
+import banjo.dom.core.CoreExpr;
+import banjo.dom.token.BadToken;
+import banjo.dom.token.Comment;
+import banjo.dom.token.Ellipsis;
+import banjo.dom.token.Identifier;
+import banjo.dom.token.NumberLiteral;
+import banjo.dom.token.OperatorRef;
+import banjo.dom.token.StringLiteral;
+import banjo.dom.token.TokenVisitor;
+import banjo.dom.token.Whitespace;
 import banjo.parser.BanjoParser;
+import banjo.parser.BanjoParser.ExtSourceExpr;
 import banjo.parser.BanjoScanner;
-import banjo.parser.errors.UnexpectedIOExceptionError;
 import banjo.parser.util.FileRange;
+import banjo.parser.util.OffsetLength;
 import banjo.parser.util.ParserReader;
+import banjo.parser.util.UnexpectedIOExceptionError;
+import fj.P2;
 
 public class SourceScanner implements ITokenScanner {
 
 	private IDocument document;
-	
+
 	private char[][] legalLineDelimiters;
 	final IToken commentToken;
 	final IToken operatorToken;
@@ -62,15 +64,14 @@ public class SourceScanner implements ITokenScanner {
 	private final IToken field1, field2, field3, field4, field5;
 	private final IToken self1, self2, self3, self4, self5;
 	private final IToken function1, function2, function3, function4, function5;
-	
+
 	private final BanjoScanner scanner = new BanjoScanner();
 	private final BanjoParser parser = new BanjoParser();
-	private final BanjoDesugarer desugarer = new BanjoDesugarer();
 	private final IncrementalUpdater astUpdater = new IncrementalUpdater();
-	private final DefRefScanner defRefScanner = new DefRefScanner();
+	private DesugarResult<CoreExpr> desugarResult;
 	private CoreExpr ast = null;
-	private final Map<FileRange,DefInfo> tokenDefMap = new HashMap<>();
-	private Set<FileRange> unusedDefs = new HashSet<>();
+	Analysis defRefAnalysis;
+	private SourceRangeAnalysis sourceRangeAnalysis;
 	private ParserReader in = null;
 
 	private int tokenOffset;
@@ -79,70 +80,74 @@ public class SourceScanner implements ITokenScanner {
 
 	private boolean inProjection;
 
+	private ExtSourceExpr parseResult;
 
-	
+
+
+
 	public SourceScanner(BanjoStyleManager manager) {
-		commentToken = new Token(manager.getStyle(BanjoStyleConstants.COMMENT));
-		operatorToken = new Token(manager.getStyle(BanjoStyleConstants.OPERATOR));
-		identifierToken = new Token(manager.getStyle(BanjoStyleConstants.IDENTIFIER));
-		unresolvedIdentifierToken = new Token(manager.getStyle(BanjoStyleConstants.UNRESOLVED_IDENTIFIER));
-		stringLiteralToken = new Token(manager.getStyle(BanjoStyleConstants.STRING_LITERAL));
-		numberLiteralToken = new Token(manager.getStyle(BanjoStyleConstants.NUMBER_LITERAL));
-		fieldToken = new Token(manager.getStyle(BanjoStyleConstants.FIELD));
-		defaultToken = new Token(manager.getStyle(BanjoStyleConstants.DEFAULT));
-		localFunctionToken = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_FUNCTION));
-		localConstToken = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_CONST));
-		localValueToken = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_VALUE));
-		parameterToken = new Token((manager.getStyle(BanjoStyleConstants.PARAMETER)));
-		selfToken = new Token(manager.getStyle(BanjoStyleConstants.SELF));
-		selfFieldToken = new Token(manager.getStyle(BanjoStyleConstants.SELF_FIELD));
-		selfConstToken = new Token(manager.getStyle(BanjoStyleConstants.SELF_FIELD));
-		selfMethodToken = new Token(manager.getStyle(BanjoStyleConstants.SELF_METHOD));
-		
-		local1 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_1));
-		local2 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_2));
-		local3 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_3));
-		local4 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_4));
-		local5 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_5));
+		this.commentToken = new Token(manager.getStyle(BanjoStyleConstants.COMMENT));
+		this.operatorToken = new Token(manager.getStyle(BanjoStyleConstants.OPERATOR));
+		this.identifierToken = new Token(manager.getStyle(BanjoStyleConstants.IDENTIFIER));
+		this.unresolvedIdentifierToken = new Token(manager.getStyle(BanjoStyleConstants.UNRESOLVED_IDENTIFIER));
+		this.stringLiteralToken = new Token(manager.getStyle(BanjoStyleConstants.STRING_LITERAL));
+		this.numberLiteralToken = new Token(manager.getStyle(BanjoStyleConstants.NUMBER_LITERAL));
+		this.fieldToken = new Token(manager.getStyle(BanjoStyleConstants.FIELD));
+		this.defaultToken = new Token(manager.getStyle(BanjoStyleConstants.DEFAULT));
+		this.localFunctionToken = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_FUNCTION));
+		this.localConstToken = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_CONST));
+		this.localValueToken = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_VALUE));
+		this.parameterToken = new Token((manager.getStyle(BanjoStyleConstants.PARAMETER)));
+		this.selfToken = new Token(manager.getStyle(BanjoStyleConstants.SELF));
+		this.selfFieldToken = new Token(manager.getStyle(BanjoStyleConstants.SELF_FIELD));
+		this.selfConstToken = new Token(manager.getStyle(BanjoStyleConstants.SELF_FIELD));
+		this.selfMethodToken = new Token(manager.getStyle(BanjoStyleConstants.SELF_METHOD));
 
-		function1 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_1));
-		function2 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_2));
-		function3 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_3));
-		function4 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_4));
-		function5 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_5));
-		
-		parameter1 = new Token(manager.getStyle(BanjoStyleConstants.PARAMETER_1));
-		parameter2 = new Token(manager.getStyle(BanjoStyleConstants.PARAMETER_2));
-		parameter3 = new Token(manager.getStyle(BanjoStyleConstants.PARAMETER_3));
-		parameter4 = new Token(manager.getStyle(BanjoStyleConstants.PARAMETER_4));
-		parameter5 = new Token(manager.getStyle(BanjoStyleConstants.PARAMETER_5));
+		this.local1 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_1));
+		this.local2 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_2));
+		this.local3 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_3));
+		this.local4 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_4));
+		this.local5 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_5));
 
-		field1 = new Token(manager.getStyle(BanjoStyleConstants.FIELD_1));
-		field2 = new Token(manager.getStyle(BanjoStyleConstants.FIELD_2));
-		field3 = new Token(manager.getStyle(BanjoStyleConstants.FIELD_3));
-		field4 = new Token(manager.getStyle(BanjoStyleConstants.FIELD_4));
-		field5 = new Token(manager.getStyle(BanjoStyleConstants.FIELD_5));
+		this.function1 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_1));
+		this.function2 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_2));
+		this.function3 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_3));
+		this.function4 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_4));
+		this.function5 = new Token(manager.getStyle(BanjoStyleConstants.LOCAL_5));
 
-		self1 = new Token(manager.getStyle(BanjoStyleConstants.SELF_1));
-		self2 = new Token(manager.getStyle(BanjoStyleConstants.SELF_2));
-		self3 = new Token(manager.getStyle(BanjoStyleConstants.SELF_3));
-		self4 = new Token(manager.getStyle(BanjoStyleConstants.SELF_4));
-		self5 = new Token(manager.getStyle(BanjoStyleConstants.SELF_5));
-		
+		this.parameter1 = new Token(manager.getStyle(BanjoStyleConstants.PARAMETER_1));
+		this.parameter2 = new Token(manager.getStyle(BanjoStyleConstants.PARAMETER_2));
+		this.parameter3 = new Token(manager.getStyle(BanjoStyleConstants.PARAMETER_3));
+		this.parameter4 = new Token(manager.getStyle(BanjoStyleConstants.PARAMETER_4));
+		this.parameter5 = new Token(manager.getStyle(BanjoStyleConstants.PARAMETER_5));
+
+		this.field1 = new Token(manager.getStyle(BanjoStyleConstants.FIELD_1));
+		this.field2 = new Token(manager.getStyle(BanjoStyleConstants.FIELD_2));
+		this.field3 = new Token(manager.getStyle(BanjoStyleConstants.FIELD_3));
+		this.field4 = new Token(manager.getStyle(BanjoStyleConstants.FIELD_4));
+		this.field5 = new Token(manager.getStyle(BanjoStyleConstants.FIELD_5));
+
+		this.self1 = new Token(manager.getStyle(BanjoStyleConstants.SELF_1));
+		this.self2 = new Token(manager.getStyle(BanjoStyleConstants.SELF_2));
+		this.self3 = new Token(manager.getStyle(BanjoStyleConstants.SELF_3));
+		this.self4 = new Token(manager.getStyle(BanjoStyleConstants.SELF_4));
+		this.self5 = new Token(manager.getStyle(BanjoStyleConstants.SELF_5));
+
 	}
 
 	/*
 	 * @see ITokenScanner#setRange(IDocument, int, int)
 	 */
+	@Override
 	public void setRange(final IDocument document, int offset, int length) {
 		Assert.isLegal(document != null);
 		final int documentLength= document.getLength();
 		checkRange(offset, length, documentLength);
 
 		setDocument(document);
-		
+
 		this.in = ParserReader.fromSubstring("", document.get(), offset, offset+length);
-		String[] delimiters = document.getLegalLineDelimiters();
+		final String[] delimiters = document.getLegalLineDelimiters();
 		this.legalLineDelimiters = new char[delimiters.length][];
 		for (int i= 0; i < delimiters.length; i++)
 			this.legalLineDelimiters[i] = delimiters[i].toCharArray();
@@ -152,23 +157,38 @@ public class SourceScanner implements ITokenScanner {
 		if(document == this.document)
 			return;
 		if(this.document != null) {
-			this.document.removeDocumentListener(documentListener);
+			this.document.removeDocumentListener(this.documentListener);
 			this.ast = null;
 		}
 		if(document != null) {
-			document.addDocumentListener(documentListener);		
+			document.addDocumentListener(this.documentListener);
 			analyseSource(document);
 		}
 	}
 
-
+	static URI EDITOR_FILE_URI_PLACEHOLDER = URI.create("open-file");
 	private void analyseSource(IDocument document) {
 		try {
-			ast = desugarer.desugar(parser.parse(ParserReader.fromString("", document.get())));
-			defRefScanner.buildTokenDefMap(ast, tokenDefMap, unusedDefs );
-		} catch (IOException e) {
+
+			final String body = document.get();
+			long startTime = System.currentTimeMillis();
+			this.parseResult = this.parser.parse(ParserReader.fromString("", body));
+			System.out.println("Took "+(System.currentTimeMillis()-startTime)+" to parse the file.");
+			startTime = System.currentTimeMillis();
+			this.desugarResult = new BanjoDesugarer(this.parseResult.getSourceMap()).desugar(this.parseResult.getExpr());
+			System.out.println("Took "+(System.currentTimeMillis()-startTime)+" to desugar the file.");
+			analyse();
+		} catch (final IOException e) {
 			throw new UnexpectedIOExceptionError(e);
 		}
+	}
+
+	public void analyse() {
+		this.ast = this.desugarResult.getValue();
+		final long startTime = System.currentTimeMillis();
+		this.defRefAnalysis = new DefRefAnalyser().analyse(EDITOR_FILE_URI_PLACEHOLDER, this.ast, this.parseResult.getFileRange());
+		this.sourceRangeAnalysis = this.defRefAnalysis.calculateSourceRanges(this.desugarResult.getDesugarMap(), this.parseResult.getSourceMap());
+		System.out.println("Took "+(System.currentTimeMillis()-startTime)+" to analyse the AST.");
 	}
 
 	/**
@@ -189,161 +209,177 @@ public class SourceScanner implements ITokenScanner {
 	@Override
 	public IToken nextToken() {
 		try {
-			return scanner.next(this.in, tokenVisitor);
-		} catch (IOException e) {
+			return this.scanner.next(this.in, this.tokenVisitor);
+		} catch (final IOException e) {
 			throw new Error(e); // Shouldn't happen with a string as input
 		}
 	}
 
 	@Override
 	public int getTokenOffset() {
-		return tokenOffset;
+		return this.tokenOffset;
 	}
 
 	@Override
 	public int getTokenLength() {
-		return tokenLength;
+		return this.tokenLength;
 	}
 
 	private final TokenVisitor<IToken> tokenVisitor = new TokenVisitor<IToken>() {
 		IToken token(IToken token, int offset, int length) {
-			tokenOffset = offset;
-			tokenLength = length;
-			if(token != Token.WHITESPACE && token != commentToken)
-				inProjection = false;
+			SourceScanner.this.tokenOffset = offset;
+			SourceScanner.this.tokenLength = length;
+			if(token != Token.WHITESPACE && token != SourceScanner.this.commentToken)
+				SourceScanner.this.inProjection = false;
 			return token;
 		}
-		
-		IToken token(IToken token, HasFileRange sourceToken) {
-			return token(token, sourceToken.getStartOffset(), sourceToken.getFileRange().length());
+
+		IToken token(IToken token, FileRange range) {
+			return token(token, range.getStartOffset(), range.length());
 		}
-		
-		IToken token(IToken normalToken, IToken fieldToken, Key key) {
-			return token(inProjection?fieldToken:normalToken, key);
-		}
-		
-		@Override
-		public IToken visitWhitespace(Whitespace ws) {
-			return token(Token.WHITESPACE, ws);
+
+		IToken token(IToken normalToken, IToken fieldToken, FileRange range) {
+			return token(SourceScanner.this.inProjection?fieldToken:normalToken, range);
 		}
 
 		@Override
-		public IToken visitComment(Comment com) {
-			return token(commentToken, com);
+		public IToken whitespace(FileRange range, Whitespace ws) {
+			return token(Token.WHITESPACE, range);
 		}
 
 		@Override
-		public IToken visitEof(FileRange entireFileRange) {
-			return token(Token.EOF, tokenOffset+tokenLength, 0);
+		public IToken comment(FileRange range, Comment com) {
+			return token(SourceScanner.this.commentToken, range);
 		}
 
 		@Override
-		public IToken visitOperator(OperatorRef or) {
-			IToken result = token(operatorToken, or);
+		public IToken eof(FileRange entireFileRange) {
+			return token(Token.EOF, SourceScanner.this.tokenOffset+SourceScanner.this.tokenLength, 0);
+		}
+
+		@Override
+		public IToken operator(FileRange range, OperatorRef or) {
+			final IToken result = token(SourceScanner.this.operatorToken, range);
 			if(or.getOp().equals(".")) {
-				inProjection = true;
+				SourceScanner.this.inProjection = true;
 			}
 			return result;
 		}
 
 		@Override
-		public IToken visitStringLiteral(StringLiteral lit) {
-			return token(stringLiteralToken, fieldToken, lit);
+		public IToken stringLiteral(FileRange range, StringLiteral lit) {
+			return token(SourceScanner.this.stringLiteralToken, SourceScanner.this.fieldToken, range);
 		}
 
 		@Override
-		public IToken visitNumberLiteral(NumberLiteral lit) {
-			return token(numberLiteralToken, lit);
+		public IToken numberLiteral(FileRange range, NumberLiteral lit) {
+			return token(SourceScanner.this.numberLiteralToken, range);
 		}
 
 		@Override
-		public IToken visitIdentifier(Identifier ident) {
-			DefInfo def = tokenDefMap.get(ident.getFileRange());
-			if(def != null) {
-				switch(def.getType()) {
-				case SELF_FIELD:
-				case FIELD: {
-					switch(def.getScopeDepth()%5) {
-					default:
-					case 0: return token(field1, ident); 
-					case 1: return token(field2, ident); 
-					case 2: return token(field3, ident); 
-					case 3: return token(field4, ident); 
-					case 4: return token(field5, ident); 
-					}
-				}
-				case LOCAL_FUNCTION: {
-					switch(def.getScopeDepth()%5) {
-					default:
-					case 0: return token(function1, ident); 
-					case 1: return token(function2, ident); 
-					case 2: return token(function3, ident); 
-					case 3: return token(function4, ident); 
-					case 4: return token(function5, ident); 
-					}
-				}
-				case LOCAL_CONST:
-				case LOCAL_VALUE: {
-					switch(def.getScopeDepth()%5) {
-					default:
-					case 0: return token(local1, ident); 
-					case 1: return token(local2, ident); 
-					case 2: return token(local3, ident); 
-					case 3: return token(local4, ident); 
-					case 4: return token(local5, ident); 
-					}
-				}
-				case PARAMETER: {
-					switch(def.getScopeDepth()%5) {
-					default:
-					case 0: return token(parameter1, ident); 
-					case 1: return token(parameter2, ident); 
-					case 2: return token(parameter3, ident); 
-					case 3: return token(parameter4, ident); 
-					case 4: return token(parameter5, ident); 
-					}
-				}
-				case SELF: {
-					switch(def.getScopeDepth()%5) {
-					default:
-					case 0: return token(self1, ident); 
-					case 1: return token(self2, ident); 
-					case 2: return token(self3, ident); 
-					case 3: return token(self4, ident); 
-					case 4: return token(self5, ident); 
-					}
-				}
-				case SELF_CONST: return token(selfConstToken, ident);
-				case SELF_METHOD: return token(selfMethodToken, ident);
-				}
-			}
-			return token(unresolvedIdentifierToken, fieldToken, ident);
+		public IToken identifier(FileRange range, Identifier ident) {
+			//			final boolean free = SourceScanner.this.sourceRangeAnalysis.getFree().member(range);
+			//			final boolean unused = SourceScanner.this.sourceRangeAnalysis.getUnusedDefs().member(range);
+			//			final boolean shadowing = SourceScanner.this.sourceRangeAnalysis.getShadowingDefs().member(range);
+			//			final boolean ref = SourceScanner.this.sourceRangeAnalysis.getShadowingDefs().member(range);
+			//			final DefInfo def =
+			//					(SourceScanner.this.defs.containsKey(range.getStartOffset()) ?
+			//							SourceScanner.this.defs.get(range.getStartOffset()) :
+			//								SourceScanner.this.refs.get(range.getStartOffset()));
+			//
+			//			if(def != null) {
+			//				switch(def.getType()) {
+			//				case SELF_FIELD:
+			//				case FIELD: {
+			//					switch(def.getScopeDepth()%5) {
+			//					default:
+			//					case 0: return token(SourceScanner.this.field1, range);
+			//					case 1: return token(SourceScanner.this.field2, range);
+			//					case 2: return token(SourceScanner.this.field3, range);
+			//					case 3: return token(SourceScanner.this.field4, range);
+			//					case 4: return token(SourceScanner.this.field5, range);
+			//					}
+			//				}
+			//				case LOCAL_FUNCTION: {
+			//					switch(def.getScopeDepth()%5) {
+			//					default:
+			//					case 0: return token(SourceScanner.this.function1, range);
+			//					case 1: return token(SourceScanner.this.function2, range);
+			//					case 2: return token(SourceScanner.this.function3, range);
+			//					case 3: return token(SourceScanner.this.function4, range);
+			//					case 4: return token(SourceScanner.this.function5, range);
+			//					}
+			//				}
+			//				case LOCAL_CONST:
+			//				case LOCAL_VALUE: {
+			//					switch(def.getScopeDepth()%5) {
+			//					default:
+			//					case 0: return token(SourceScanner.this.local1, range);
+			//					case 1: return token(SourceScanner.this.local2, range);
+			//					case 2: return token(SourceScanner.this.local3, range);
+			//					case 3: return token(SourceScanner.this.local4, range);
+			//					case 4: return token(SourceScanner.this.local5, range);
+			//					}
+			//				}
+			//				case PARAMETER: {
+			//					switch(def.getScopeDepth()%5) {
+			//					default:
+			//					case 0: return token(SourceScanner.this.parameter1, range);
+			//					case 1: return token(SourceScanner.this.parameter2, range);
+			//					case 2: return token(SourceScanner.this.parameter3, range);
+			//					case 3: return token(SourceScanner.this.parameter4, range);
+			//					case 4: return token(SourceScanner.this.parameter5, range);
+			//					}
+			//				}
+			//				case SELF: {
+			//					switch(def.getScopeDepth()%5) {
+			//					default:
+			//					case 0: return token(SourceScanner.this.self1, range);
+			//					case 1: return token(SourceScanner.this.self2, range);
+			//					case 2: return token(SourceScanner.this.self3, range);
+			//					case 3: return token(SourceScanner.this.self4, range);
+			//					case 4: return token(SourceScanner.this.self5, range);
+			//					}
+			//				}
+			//				case SELF_CONST: return token(SourceScanner.this.selfConstToken, range);
+			//				case SELF_METHOD: return token(SourceScanner.this.selfMethodToken, range);
+			//				}
+			//			}
+			return token(SourceScanner.this.defaultToken, SourceScanner.this.fieldToken, range);
 		}
 
 		@Override
-		public IToken visitEllipsis(Ellipsis ellipsis) {
-			return token(identifierToken, ellipsis);
+		public IToken ellipsis(FileRange range, Ellipsis ellipsis) {
+			return token(SourceScanner.this.identifierToken, range);
 		}
 
 		@Override
-		public IToken visitUnit(UnitRef unit) {
-			return token(identifierToken, unit);
+		public IToken badToken(FileRange range, BadToken badToken) {
+			return token(SourceScanner.this.defaultToken, range);
 		}
 	};
-	
+
 	final IDocumentListener documentListener = new IDocumentListener() {
-		
+
 		@Override
 		public void documentChanged(DocumentEvent event) {
-			if(event.getDocument() == document) {
-				CoreExpr oldAst = ast;
-				CoreExpr newAst = ast = astUpdater.applyEdit(ast, event.getOffset(), event.getLength(), event.getText(), document.get());
-				defRefScanner.updateTokenDefMap(oldAst, newAst, tokenDefMap, unusedDefs);
+			if(event.getDocument() == SourceScanner.this.document) {
+				final List<OffsetLength> damageRanges = new ArrayList<>();
+				// TODO This should probably be integrated with the DamagerRepairer
+				final long startTime = System.currentTimeMillis();
+				final P2<ExtSourceExpr, DesugarResult<CoreExpr>> updated = SourceScanner.this.astUpdater.updateAst(
+						SourceScanner.this.desugarResult, SourceScanner.this.parseResult,
+						event.getOffset(), event.getLength(), event.getText(),
+						SourceScanner.this.document.get(), damageRanges);
+				SourceScanner.this.desugarResult = updated._2();
+				SourceScanner.this.parseResult = updated._1();
+				System.out.println("Took "+(System.currentTimeMillis()-startTime)+" to incrementally update the AST.");
+				analyse();
 			}
 		}
-		
+
 		@Override
 		public void documentAboutToBeChanged(DocumentEvent event) {	}
 	};
-	
+
 }
