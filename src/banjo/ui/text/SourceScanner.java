@@ -1,25 +1,13 @@
 package banjo.ui.text;
 
 import java.io.IOException;
-import java.net.URI;
-import java.util.ArrayList;
-import java.util.List;
 
 import org.eclipse.core.runtime.Assert;
-import org.eclipse.jface.text.DocumentEvent;
 import org.eclipse.jface.text.IDocument;
-import org.eclipse.jface.text.IDocumentListener;
 import org.eclipse.jface.text.rules.IToken;
 import org.eclipse.jface.text.rules.ITokenScanner;
 import org.eclipse.jface.text.rules.Token;
 
-import banjo.analysis.DefRefAnalyser;
-import banjo.analysis.DefRefAnalyser.Analysis;
-import banjo.analysis.DefRefAnalyser.SourceRangeAnalysis;
-import banjo.desugar.BanjoDesugarer;
-import banjo.desugar.BanjoDesugarer.DesugarResult;
-import banjo.desugar.IncrementalUpdater;
-import banjo.dom.core.CoreExpr;
 import banjo.dom.token.BadToken;
 import banjo.dom.token.Comment;
 import banjo.dom.token.Ellipsis;
@@ -29,14 +17,9 @@ import banjo.dom.token.OperatorRef;
 import banjo.dom.token.StringLiteral;
 import banjo.dom.token.TokenVisitor;
 import banjo.dom.token.Whitespace;
-import banjo.parser.BanjoParser;
-import banjo.parser.BanjoParser.ExtSourceExpr;
 import banjo.parser.BanjoScanner;
 import banjo.parser.util.FileRange;
-import banjo.parser.util.OffsetLength;
 import banjo.parser.util.ParserReader;
-import banjo.parser.util.UnexpectedIOExceptionError;
-import fj.P2;
 
 public class SourceScanner implements ITokenScanner {
 
@@ -66,12 +49,6 @@ public class SourceScanner implements ITokenScanner {
 	private final IToken function1, function2, function3, function4, function5;
 
 	private final BanjoScanner scanner = new BanjoScanner();
-	private final BanjoParser parser = new BanjoParser();
-	private final IncrementalUpdater astUpdater = new IncrementalUpdater();
-	private DesugarResult<CoreExpr> desugarResult;
-	private CoreExpr ast = null;
-	Analysis defRefAnalysis;
-	private SourceRangeAnalysis sourceRangeAnalysis;
 	private ParserReader in = null;
 
 	private int tokenOffset;
@@ -79,8 +56,6 @@ public class SourceScanner implements ITokenScanner {
 	private int tokenLength;
 
 	private boolean inProjection;
-
-	private ExtSourceExpr parseResult;
 
 
 
@@ -156,39 +131,7 @@ public class SourceScanner implements ITokenScanner {
 	public void setDocument(final IDocument document) {
 		if(document == this.document)
 			return;
-		if(this.document != null) {
-			this.document.removeDocumentListener(this.documentListener);
-			this.ast = null;
-		}
-		if(document != null) {
-			document.addDocumentListener(this.documentListener);
-			analyseSource(document);
-		}
-	}
-
-	static URI EDITOR_FILE_URI_PLACEHOLDER = URI.create("open-file");
-	private void analyseSource(IDocument document) {
-		try {
-
-			final String body = document.get();
-			long startTime = System.currentTimeMillis();
-			this.parseResult = this.parser.parse(ParserReader.fromString("", body));
-			System.out.println("Took "+(System.currentTimeMillis()-startTime)+" to parse the file.");
-			startTime = System.currentTimeMillis();
-			this.desugarResult = new BanjoDesugarer(this.parseResult.getSourceMap()).desugar(this.parseResult.getExpr());
-			System.out.println("Took "+(System.currentTimeMillis()-startTime)+" to desugar the file.");
-			analyse();
-		} catch (final IOException e) {
-			throw new UnexpectedIOExceptionError(e);
-		}
-	}
-
-	public void analyse() {
-		this.ast = this.desugarResult.getValue();
-		final long startTime = System.currentTimeMillis();
-		this.defRefAnalysis = new DefRefAnalyser().analyse(EDITOR_FILE_URI_PLACEHOLDER, this.ast, this.parseResult.getFileRange());
-		this.sourceRangeAnalysis = this.defRefAnalysis.calculateSourceRanges(this.desugarResult.getDesugarMap(), this.parseResult.getSourceMap());
-		System.out.println("Took "+(System.currentTimeMillis()-startTime)+" to analyse the AST.");
+		this.document = document;
 	}
 
 	/**
@@ -278,73 +221,6 @@ public class SourceScanner implements ITokenScanner {
 
 		@Override
 		public IToken identifier(FileRange range, Identifier ident) {
-			//			final boolean free = SourceScanner.this.sourceRangeAnalysis.getFree().member(range);
-			//			final boolean unused = SourceScanner.this.sourceRangeAnalysis.getUnusedDefs().member(range);
-			//			final boolean shadowing = SourceScanner.this.sourceRangeAnalysis.getShadowingDefs().member(range);
-			//			final boolean ref = SourceScanner.this.sourceRangeAnalysis.getShadowingDefs().member(range);
-			//			final DefInfo def =
-			//					(SourceScanner.this.defs.containsKey(range.getStartOffset()) ?
-			//							SourceScanner.this.defs.get(range.getStartOffset()) :
-			//								SourceScanner.this.refs.get(range.getStartOffset()));
-			//
-			//			if(def != null) {
-			//				switch(def.getType()) {
-			//				case SELF_FIELD:
-			//				case FIELD: {
-			//					switch(def.getScopeDepth()%5) {
-			//					default:
-			//					case 0: return token(SourceScanner.this.field1, range);
-			//					case 1: return token(SourceScanner.this.field2, range);
-			//					case 2: return token(SourceScanner.this.field3, range);
-			//					case 3: return token(SourceScanner.this.field4, range);
-			//					case 4: return token(SourceScanner.this.field5, range);
-			//					}
-			//				}
-			//				case LOCAL_FUNCTION: {
-			//					switch(def.getScopeDepth()%5) {
-			//					default:
-			//					case 0: return token(SourceScanner.this.function1, range);
-			//					case 1: return token(SourceScanner.this.function2, range);
-			//					case 2: return token(SourceScanner.this.function3, range);
-			//					case 3: return token(SourceScanner.this.function4, range);
-			//					case 4: return token(SourceScanner.this.function5, range);
-			//					}
-			//				}
-			//				case LOCAL_CONST:
-			//				case LOCAL_VALUE: {
-			//					switch(def.getScopeDepth()%5) {
-			//					default:
-			//					case 0: return token(SourceScanner.this.local1, range);
-			//					case 1: return token(SourceScanner.this.local2, range);
-			//					case 2: return token(SourceScanner.this.local3, range);
-			//					case 3: return token(SourceScanner.this.local4, range);
-			//					case 4: return token(SourceScanner.this.local5, range);
-			//					}
-			//				}
-			//				case PARAMETER: {
-			//					switch(def.getScopeDepth()%5) {
-			//					default:
-			//					case 0: return token(SourceScanner.this.parameter1, range);
-			//					case 1: return token(SourceScanner.this.parameter2, range);
-			//					case 2: return token(SourceScanner.this.parameter3, range);
-			//					case 3: return token(SourceScanner.this.parameter4, range);
-			//					case 4: return token(SourceScanner.this.parameter5, range);
-			//					}
-			//				}
-			//				case SELF: {
-			//					switch(def.getScopeDepth()%5) {
-			//					default:
-			//					case 0: return token(SourceScanner.this.self1, range);
-			//					case 1: return token(SourceScanner.this.self2, range);
-			//					case 2: return token(SourceScanner.this.self3, range);
-			//					case 3: return token(SourceScanner.this.self4, range);
-			//					case 4: return token(SourceScanner.this.self5, range);
-			//					}
-			//				}
-			//				case SELF_CONST: return token(SourceScanner.this.selfConstToken, range);
-			//				case SELF_METHOD: return token(SourceScanner.this.selfMethodToken, range);
-			//				}
-			//			}
 			return token(SourceScanner.this.defaultToken, SourceScanner.this.fieldToken, range);
 		}
 
@@ -357,29 +233,6 @@ public class SourceScanner implements ITokenScanner {
 		public IToken badToken(FileRange range, BadToken badToken) {
 			return token(SourceScanner.this.defaultToken, range);
 		}
-	};
-
-	final IDocumentListener documentListener = new IDocumentListener() {
-
-		@Override
-		public void documentChanged(DocumentEvent event) {
-			if(event.getDocument() == SourceScanner.this.document) {
-				final List<OffsetLength> damageRanges = new ArrayList<>();
-				// TODO This should probably be integrated with the DamagerRepairer
-				final long startTime = System.currentTimeMillis();
-				final P2<ExtSourceExpr, DesugarResult<CoreExpr>> updated = SourceScanner.this.astUpdater.updateAst(
-						SourceScanner.this.desugarResult, SourceScanner.this.parseResult,
-						event.getOffset(), event.getLength(), event.getText(),
-						SourceScanner.this.document.get(), damageRanges);
-				SourceScanner.this.desugarResult = updated._2();
-				SourceScanner.this.parseResult = updated._1();
-				System.out.println("Took "+(System.currentTimeMillis()-startTime)+" to incrementally update the AST.");
-				analyse();
-			}
-		}
-
-		@Override
-		public void documentAboutToBeChanged(DocumentEvent event) {	}
 	};
 
 }
