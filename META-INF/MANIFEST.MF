@@ -4,12 +4,14 @@ Bundle-Name: Editor
 Bundle-SymbolicName: banjo.editor;singleton:=true
 Bundle-Version: 1.0.0.qualifier
 Bundle-Activator: banjo.editor.Activator
-Require-Bundle: banjo.lang,
- org.eclipse.ui,
+Require-Bundle: org.eclipse.ui,
  org.eclipse.core.runtime,
  org.eclipse.jface.text,
  org.eclipse.ui.editors,
  org.eclipse.core.resources,
- org.eclipse.core.filesystem
+ org.eclipse.core.filesystem,
+ banjo.banjo-lang;bundle-version="0.1.0",
+ org.functionaljava;bundle-version="4.3.0",
+ org.functionaljava.java8;bundle-version="4.3.0"
 Bundle-ActivationPolicy: lazy
 Bundle-RequiredExecutionEnvironment: JavaSE-1.7

@@ -21,29 +21,21 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.QualifiedName;
 
-import banjo.analysis.DefRefAnalyser;
-import banjo.analysis.DefRefAnalyser.Analysis;
-import banjo.analysis.DefRefAnalyser.SourceRangeAnalysis;
-import banjo.analysis.DefRefAnalyser.VarDefWithRange;
-import banjo.analysis.DefRefAnalyser.VarRefWithRange;
-import banjo.desugar.BanjoDesugarer;
-import banjo.desugar.BanjoDesugarer.DesugarResult;
+import banjo.desugar.SourceExprDesugarer;
+import banjo.desugar.SourceExprDesugarer.DesugarResult;
 import banjo.dom.BadExpr;
 import banjo.dom.core.CoreExpr;
 import banjo.dom.source.SourceExpr;
 import banjo.editor.Activator;
-import banjo.parser.BanjoParser;
-import banjo.parser.BanjoParser.ExtSourceExpr;
+import banjo.parser.SourceCodeParser;
 import banjo.parser.util.FileRange;
 import banjo.parser.util.ParserReader;
-import fj.P2;
-import fj.data.Set;
 
 public class BanjoBuilder extends IncrementalProjectBuilder {
 	class BanjoBuilderDeltaVisitor implements IResourceDeltaVisitor {
 		/*
 		 * (non-Javadoc)
-		 * 
+		 *
 		 * @see org.eclipse.core.resources.IResourceDeltaVisitor#visit(org.eclipse.core.resources.IResourceDelta)
 		 */
 		@Override
@@ -107,7 +99,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 
 	/*
 	 * (non-Javadoc)
-	 * 
+	 *
 	 * @see org.eclipse.core.internal.events.InternalBuilder#build(int,
 	 *      java.util.Map, org.eclipse.core.runtime.IProgressMonitor)
 	 */
@@ -148,7 +140,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 			final IFile file = (IFile) resource;
 			deleteMarkers(file);
 			clearAstCache(file);
-			final BanjoParser parser = new BanjoParser();
+			final SourceCodeParser parser = new SourceCodeParser();
 			IFileInfo fileInfo;
 			try {
 				fileInfo = EFS.getStore(file.getLocationURI()).fetchInfo();
@@ -174,12 +166,10 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 
 			try {
 				final ParserReader in = new ParserReader(reader, file.getName(), (int)fileInfo.getLength());
-				final ExtSourceExpr parseResult = parser.parse(in);
-				final BanjoDesugarer desugarer = new BanjoDesugarer();
-				final DesugarResult<CoreExpr> desugarResult = desugarer.desugar(parseResult.getExpr());
-				final Analysis defRefAnalysis = new DefRefAnalyser().analyse(file.getLocationURI(), desugarResult.getValue(), parseResult.getFileRange());
-				final SourceRangeAnalysis sourceRangeAnalysis = defRefAnalysis.calculateSourceRanges(desugarResult.getDesugarMap(), parseResult.getSourceMap());
-				addMarkers(file, parseResult, desugarResult, sourceRangeAnalysis);
+				final SourceExpr parseResult = parser.parse(in);
+				final SourceExprDesugarer desugarer = new SourceExprDesugarer();
+				final DesugarResult<CoreExpr> desugarResult = desugarer.desugar(parseResult);
+				addMarkers(file, parseResult, desugarResult);
 			} catch (final IOException e) {
 				Activator.log("Error while reading "+file.getName(), e);
 				return;
@@ -193,70 +183,37 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 		}
 	}
 
-	public static boolean addMarkers(final IFile file, final ExtSourceExpr parseResult, final DesugarResult<CoreExpr> desugarResult,
-			final SourceRangeAnalysis sourceRangeAnalysis) {
+	public static boolean addMarkers(final IFile file, final SourceExpr parseResult, final DesugarResult<CoreExpr> desugarResult) {
 		try {
 			file.setSessionProperty(AST_CACHE_PROPERTY, desugarResult);
 		} catch (final CoreException e) {
 			Activator.log(e.getStatus());
 		}
 		return addParseProblemMarkers(file, parseResult) ||
-				addDesugarProblemMarkers(file, parseResult, desugarResult) ||
-				addDefRefProblemMarkers(file, sourceRangeAnalysis);
-	}
-
-	public static boolean addDefRefProblemMarkers(final IFile file,
-			final SourceRangeAnalysis sourceRangeAnalysis) {
-		boolean addedMarker = false;
-		for(final VarRefWithRange p : sourceRangeAnalysis.getFree()) {
-			final FileRange range = p.getRange();
-			final String name = p.getName();
-			addedMarker = true;
-			addMarker(file, "Variable '"+name+"' undefined", range, IMarker.SEVERITY_ERROR);
-		}
-		for(final VarDefWithRange p : sourceRangeAnalysis.getShadowingDefs()) {
-			final FileRange range = p.getRange();
-			final String name = p.getName();
-			if(!name.startsWith("_")) {
-				addMarker(file, "Variable '"+name+"' already defined", range, IMarker.SEVERITY_ERROR);
-				addedMarker = true;
-			}
-		}
-		for(final VarDefWithRange p : sourceRangeAnalysis.getUnusedDefs()) {
-			final FileRange range = p.getRange();
-			final String name = p.getName();
-			if(!name.startsWith("_") && !p.isSelfName()) {
-				addMarker(file, "Variable '"+name+"' never used", range, IMarker.SEVERITY_ERROR);
-				addedMarker = true;
-			}
-		}
-		return addedMarker;
+				addDesugarProblemMarkers(file, parseResult, desugarResult);
 	}
 
 	public static boolean addDesugarProblemMarkers(final IFile file,
-			final ExtSourceExpr parseResult,
+			final SourceExpr parseResult,
 			final DesugarResult<CoreExpr> desugarResult) {
 		boolean haveDesugarProblems=false;
-		for(final P2<FileRange,fj.data.Set<BadExpr>> problem : desugarResult.getProblems(parseResult.getSourceMap())) {
-			for(final BadExpr badExpr : problem._2()) {
-				haveDesugarProblems = true;
-				addMarker(file, badExpr.getMessage(), problem._1(), IMarker.SEVERITY_ERROR);
-			}
+		for(final BadExpr problem : desugarResult.getProblems()) {
+			haveDesugarProblems = true;
+			problem.getSourceFileRanges().forEach(r -> {
+				addMarker(file, problem.getMessage(), r.getFileRange(), IMarker.SEVERITY_ERROR);
+			});
 		}
 		return haveDesugarProblems;
 	}
 
 	public static boolean addParseProblemMarkers(final IFile file,
-			final ExtSourceExpr parseResult) {
-		final boolean haveParseProblems=false;
-		for(final P2<SourceExpr, Set<FileRange>> sourceMapPair : parseResult.getSourceMap()) {
-			final SourceExpr node = sourceMapPair._1();
-			if(node instanceof BadExpr) {
-				final BadExpr badExpr = (BadExpr) node;
-				for(final FileRange r : sourceMapPair._2()) {
-					addMarker(file, badExpr.getMessage(), r, IMarker.SEVERITY_ERROR);
-				}
-			}
+			final SourceExpr parseResult) {
+		boolean haveParseProblems=false;
+		for(final BadExpr problem : parseResult.getProblems()) {
+			haveParseProblems = true;
+			problem.getSourceFileRanges().forEach(r -> {
+				addMarker(file, problem.getMessage(), r.getFileRange(), IMarker.SEVERITY_ERROR);
+			});
 		}
 		return haveParseProblems;
 	}

@@ -3,12 +3,14 @@ package banjo.ui.text;
 
 public interface BanjoStyleConstants {
 
+	String LINE_COMMENT = "banjo_line_comment";
 	String COMMENT = "banjo_comment";
 	String STRING_LITERAL = "banjo_string_literal";
 	String NUMBER_LITERAL = "banjo_number_literal";
 	String IDENTIFIER = "banjo_identifier";
 	String DEFAULT = "banjo_default";
 	String FIELD = "banjo_field";
+	String UNICODE_OPERATOR = "banjo_unicode_operator";
 	String OPERATOR = "banjo_operator";
 	String LOCAL_FUNCTION = "banjo_local_function";
 	String LOCAL_CONST = "banjo_local_const";

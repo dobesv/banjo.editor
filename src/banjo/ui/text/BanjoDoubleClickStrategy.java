@@ -1,6 +1,7 @@
 package banjo.ui.text;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 
 import org.eclipse.jface.text.BadLocationException;
 import org.eclipse.jface.text.DefaultTextDoubleClickStrategy;
@@ -8,89 +9,83 @@ import org.eclipse.jface.text.IDocument;
 import org.eclipse.jface.text.IRegion;
 import org.eclipse.jface.text.Region;
 
-import banjo.dom.token.BadToken;
-import banjo.dom.token.Comment;
-import banjo.dom.token.Ellipsis;
-import banjo.dom.token.Identifier;
-import banjo.dom.token.NumberLiteral;
-import banjo.dom.token.OperatorRef;
-import banjo.dom.token.StringLiteral;
-import banjo.dom.token.Token;
 import banjo.dom.token.TokenVisitor;
-import banjo.dom.token.Whitespace;
-import banjo.parser.BanjoScanner;
+import banjo.parser.SourceCodeScanner;
 import banjo.parser.util.FileRange;
 import banjo.parser.util.ParserReader;
 
 public class BanjoDoubleClickStrategy extends DefaultTextDoubleClickStrategy {
 
-	private final class WordFinder implements TokenVisitor<IRegion> {
+	private final class WordFinder implements TokenVisitor<WordFinder> {
 		final int offset;
-		IRegion result = null;
-		boolean found = false;
+		final IRegion result;
+		final boolean found;
 
 
 
 		public WordFinder(int offset) {
 			super();
 			this.offset = offset;
+			this.result = null;
+			this.found = false;
+		}
+
+		public WordFinder(int offset, IRegion result) {
+			super();
+			this.offset = offset;
+			this.result = result;
+			this.found = true;
 		}
 
 		@Override
-		public IRegion comment(FileRange range, Comment c) {
-			return null;
+		public WordFinder comment(FileRange range, String text) {
+			return this;
 		}
 
 		@Override
-		public IRegion ellipsis(FileRange range, Ellipsis ellipsis) {
-			return tryToken(range, ellipsis);
+		public WordFinder eof(FileRange entireFileRange) {
+			return this;
 		}
 
 		@Override
-		public IRegion eof(FileRange entireFileRange) {
-			return this.result;
+		public WordFinder identifier(FileRange range, String id) {
+			return tryToken(range);
 		}
 
 		@Override
-		public IRegion identifier(FileRange range, Identifier identifier) {
-			return tryToken(range, identifier);
+		public WordFinder numberLiteral(FileRange range, Number number, String text) {
+			return tryToken(range);
 		}
 
 		@Override
-		public IRegion numberLiteral(FileRange range, NumberLiteral numberLiteral) {
-			return tryToken(range, numberLiteral);
+		public WordFinder operator(FileRange range, String op) {
+			return tryToken(range);
 		}
 
 		@Override
-		public IRegion operator(FileRange range, OperatorRef operatorRef) {
-			return tryToken(range, operatorRef);
+		public WordFinder stringLiteral(FileRange range, String text) {
+			return this;
 		}
 
 		@Override
-		public IRegion stringLiteral(FileRange range, StringLiteral stringLiteral) {
-			return null;
+		public WordFinder whitespace(FileRange range, String text) {
+			return this;
 		}
 
-		@Override
-		public IRegion whitespace(FileRange range, Whitespace ws) {
-			return null;
-		}
-
-		private IRegion tryToken(FileRange fileRange, Token token) {
+		private WordFinder tryToken(FileRange fileRange) {
 			if(!this.found && fileRange.containsOffset(this.offset)){
-				this.found = true;
-				this.result = new Region(fileRange.getStartOffset(), fileRange.length());
+				return new WordFinder(offset, new Region(fileRange.getStartOffset(), fileRange.length()));
 			}
-			return null;
+			return this;
 		}
 
 		@Override
-		public IRegion badToken(FileRange fileRange, BadToken badToken) {
-			return tryToken(fileRange, badToken);
+		public WordFinder badToken(FileRange fileRange, String text, String message) {
+			return tryToken(fileRange);
 		}
 	}
 	protected final BanjoCharacterPairMatcher pairMatcher= new BanjoCharacterPairMatcher();
-	protected final BanjoScanner scanner= new BanjoScanner();
+	protected final SourceCodeScanner scanner= new SourceCodeScanner();
 
 
 	protected IRegion findAtom(IDocument document, int offset) {
@@ -106,9 +101,9 @@ public class BanjoDoubleClickStrategy extends DefaultTextDoubleClickStrategy {
 
 		final ParserReader in = ParserReader.fromSubstring("", document.get(), line.getOffset(), line.getOffset()+line.getLength());
 		try {
-			return this.scanner.<IRegion>scan(in, new WordFinder(offset));
+			return this.scanner.<WordFinder>scan(in, new WordFinder(offset)).result;
 		} catch (final IOException e) {
-			throw new Error(e); // Shouldn't happen
+			throw new UncheckedIOException(e); // Shouldn't happen
 		}
 
 	}

@@ -1,6 +1,7 @@
 package banjo.ui.text;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 
 import org.eclipse.core.runtime.Assert;
 import org.eclipse.jface.text.IDocument;
@@ -8,25 +9,91 @@ import org.eclipse.jface.text.rules.IToken;
 import org.eclipse.jface.text.rules.ITokenScanner;
 import org.eclipse.jface.text.rules.Token;
 
-import banjo.dom.token.BadToken;
-import banjo.dom.token.Comment;
-import banjo.dom.token.Ellipsis;
-import banjo.dom.token.Identifier;
-import banjo.dom.token.NumberLiteral;
-import banjo.dom.token.OperatorRef;
-import banjo.dom.token.StringLiteral;
 import banjo.dom.token.TokenVisitor;
-import banjo.dom.token.Whitespace;
-import banjo.parser.BanjoScanner;
+import banjo.parser.SourceCodeScanner;
 import banjo.parser.util.FileRange;
 import banjo.parser.util.ParserReader;
 
 public class SourceScanner implements ITokenScanner {
 
+	private final class ITokenVisitor implements TokenVisitor<ITokenVisitor> {
+		final IToken foundToken;
+		public ITokenVisitor() {
+			foundToken = null;
+		}
+		public ITokenVisitor(IToken foundToken) {
+			super();
+			this.foundToken = foundToken;
+		}
+
+		ITokenVisitor token(IToken token, int offset, int length) {
+			SourceScanner.this.tokenOffset = offset;
+			SourceScanner.this.tokenLength = length;
+			if(token != Token.WHITESPACE && token != SourceScanner.this.lineCommentToken)
+				SourceScanner.this.inProjection = false;
+			return new ITokenVisitor(token);
+		}
+
+		ITokenVisitor token(IToken token, FileRange range) {
+			return token(token, range.getStartOffset(), range.length());
+		}
+
+		ITokenVisitor token(IToken normalToken, IToken fieldToken, FileRange range) {
+			return token(SourceScanner.this.inProjection?fieldToken:normalToken, range);
+		}
+
+		@Override
+		public ITokenVisitor eof(FileRange entireFileRange) {
+			return token(Token.EOF, SourceScanner.this.tokenOffset+SourceScanner.this.tokenLength, 0);
+		}
+
+		@Override
+		public ITokenVisitor stringLiteral(FileRange range, String string) {
+			return token(SourceScanner.this.stringLiteralToken, SourceScanner.this.fieldToken, range);
+		}
+
+		@Override
+		public ITokenVisitor numberLiteral(FileRange range, Number number, String suffix) {
+			return token(SourceScanner.this.numberLiteralToken, range);
+		}
+
+		@Override
+		public ITokenVisitor identifier(FileRange range, String id) {
+			return token(SourceScanner.this.defaultToken, SourceScanner.this.fieldToken, range);
+		}
+
+		@Override
+		public ITokenVisitor operator(FileRange range, String op) {
+			final IToken token = op.charAt(0) > 127 ? SourceScanner.this.unicodeOperatorToken : SourceScanner.this.operatorToken;
+			final ITokenVisitor result = token(token, range);
+			if(op.equals(".")) {
+				SourceScanner.this.inProjection = true;
+			}
+			return result;
+		}
+
+		@Override
+		public ITokenVisitor whitespace(FileRange range, String text) {
+			return token(Token.WHITESPACE, range);
+		}
+
+		@Override
+		public ITokenVisitor comment(FileRange range, String text) {
+			return token(SourceScanner.this.lineCommentToken, range);
+		}
+
+		@Override
+		public ITokenVisitor badToken(FileRange range, String text, String message) {
+			return token(SourceScanner.this.defaultToken, range);
+		}
+	}
+
 	private IDocument document;
 
 	private char[][] legalLineDelimiters;
+	final IToken lineCommentToken;
 	final IToken commentToken;
+	final IToken unicodeOperatorToken;
 	final IToken operatorToken;
 	final IToken identifierToken;
 	final IToken unresolvedIdentifierToken;
@@ -48,7 +115,7 @@ public class SourceScanner implements ITokenScanner {
 	private final IToken self1, self2, self3, self4, self5;
 	private final IToken function1, function2, function3, function4, function5;
 
-	private final BanjoScanner scanner = new BanjoScanner();
+	private final SourceCodeScanner scanner = new SourceCodeScanner();
 	private ParserReader in = null;
 
 	private int tokenOffset;
@@ -61,7 +128,9 @@ public class SourceScanner implements ITokenScanner {
 
 
 	public SourceScanner(BanjoStyleManager manager) {
-		this.commentToken = new Token(manager.getStyle(BanjoStyleConstants.COMMENT));
+		this.commentToken = new Token(manager.getStyle(BanjoStyleConstants.LINE_COMMENT));
+		this.lineCommentToken = new Token(manager.getStyle(BanjoStyleConstants.COMMENT));
+		this.unicodeOperatorToken = new Token(manager.getStyle(BanjoStyleConstants.UNICODE_OPERATOR));
 		this.operatorToken = new Token(manager.getStyle(BanjoStyleConstants.OPERATOR));
 		this.identifierToken = new Token(manager.getStyle(BanjoStyleConstants.IDENTIFIER));
 		this.unresolvedIdentifierToken = new Token(manager.getStyle(BanjoStyleConstants.UNRESOLVED_IDENTIFIER));
@@ -152,9 +221,9 @@ public class SourceScanner implements ITokenScanner {
 	@Override
 	public IToken nextToken() {
 		try {
-			return this.scanner.next(this.in, this.tokenVisitor);
+			return this.scanner.next(this.in, this.tokenVisitor).foundToken;
 		} catch (final IOException e) {
-			throw new Error(e); // Shouldn't happen with a string as input
+			throw new UncheckedIOException(e); // Shouldn't happen with a string as input
 		}
 	}
 
@@ -168,71 +237,6 @@ public class SourceScanner implements ITokenScanner {
 		return this.tokenLength;
 	}
 
-	private final TokenVisitor<IToken> tokenVisitor = new TokenVisitor<IToken>() {
-		IToken token(IToken token, int offset, int length) {
-			SourceScanner.this.tokenOffset = offset;
-			SourceScanner.this.tokenLength = length;
-			if(token != Token.WHITESPACE && token != SourceScanner.this.commentToken)
-				SourceScanner.this.inProjection = false;
-			return token;
-		}
-
-		IToken token(IToken token, FileRange range) {
-			return token(token, range.getStartOffset(), range.length());
-		}
-
-		IToken token(IToken normalToken, IToken fieldToken, FileRange range) {
-			return token(SourceScanner.this.inProjection?fieldToken:normalToken, range);
-		}
-
-		@Override
-		public IToken whitespace(FileRange range, Whitespace ws) {
-			return token(Token.WHITESPACE, range);
-		}
-
-		@Override
-		public IToken comment(FileRange range, Comment com) {
-			return token(SourceScanner.this.commentToken, range);
-		}
-
-		@Override
-		public IToken eof(FileRange entireFileRange) {
-			return token(Token.EOF, SourceScanner.this.tokenOffset+SourceScanner.this.tokenLength, 0);
-		}
-
-		@Override
-		public IToken operator(FileRange range, OperatorRef or) {
-			final IToken result = token(SourceScanner.this.operatorToken, range);
-			if(or.getOp().equals(".")) {
-				SourceScanner.this.inProjection = true;
-			}
-			return result;
-		}
-
-		@Override
-		public IToken stringLiteral(FileRange range, StringLiteral lit) {
-			return token(SourceScanner.this.stringLiteralToken, SourceScanner.this.fieldToken, range);
-		}
-
-		@Override
-		public IToken numberLiteral(FileRange range, NumberLiteral lit) {
-			return token(SourceScanner.this.numberLiteralToken, range);
-		}
-
-		@Override
-		public IToken identifier(FileRange range, Identifier ident) {
-			return token(SourceScanner.this.defaultToken, SourceScanner.this.fieldToken, range);
-		}
-
-		@Override
-		public IToken ellipsis(FileRange range, Ellipsis ellipsis) {
-			return token(SourceScanner.this.identifierToken, range);
-		}
-
-		@Override
-		public IToken badToken(FileRange range, BadToken badToken) {
-			return token(SourceScanner.this.defaultToken, range);
-		}
-	};
+	private final ITokenVisitor tokenVisitor = new ITokenVisitor();
 
 }
