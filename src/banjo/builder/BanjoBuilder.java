@@ -1,15 +1,20 @@
 package banjo.builder;
 
 import java.io.BufferedReader;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.UnsupportedEncodingException;
+import java.nio.file.Path;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import org.eclipse.core.filesystem.EFS;
 import org.eclipse.core.filesystem.IFileInfo;
+import org.eclipse.core.resources.IContainer;
 import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.IFolder;
 import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
@@ -24,12 +29,20 @@ import org.eclipse.core.runtime.QualifiedName;
 import banjo.desugar.SourceExprDesugarer;
 import banjo.desugar.SourceExprDesugarer.DesugarResult;
 import banjo.dom.BadExpr;
+import banjo.dom.core.BadCoreExpr;
+import banjo.dom.core.CoreErrorGatherer;
 import banjo.dom.core.CoreExpr;
+import banjo.dom.core.DefRefAnalyser;
 import banjo.dom.source.SourceExpr;
+import banjo.dom.token.Identifier;
 import banjo.editor.Activator;
+import banjo.eval.ProjectLoader;
 import banjo.parser.SourceCodeParser;
 import banjo.parser.util.FileRange;
 import banjo.parser.util.ParserReader;
+import banjo.parser.util.SourceFileRange;
+import fj.data.List;
+import fj.data.TreeMap;
 
 public class BanjoBuilder extends IncrementalProjectBuilder {
 	class BanjoBuilderDeltaVisitor implements IResourceDeltaVisitor {
@@ -68,6 +81,109 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 		}
 	}
 
+	class EclipseBanjoProjectLoader extends ProjectLoader {
+		@Override
+		public CoreExpr loadSourceCode(Path path) {
+			if(path.isAbsolute())
+				return super.loadSourceCode(path);
+			IResource f = getResource(path);
+			if(f == null || !f.exists())
+		    	return new BadCoreExpr(new SourceFileRange(path.toString(), FileRange.EMPTY), "Error reading file '"+path+"': File not found");
+			try {
+	            CoreExpr cached = (CoreExpr)f.getSessionProperty(AST_CACHE_PROPERTY);
+	            if(cached != null) {
+	            	return cached;
+	            }
+			    cached = super.loadSourceCode(path);
+			    f.setSessionProperty(AST_CACHE_PROPERTY, cached);
+			    return cached;
+            } catch (CoreException e) {
+	            e.printStackTrace();
+		    	return new BadCoreExpr(new SourceFileRange(path.toString(), FileRange.EMPTY), "Error reading file '"+path+"': "+e);
+            }
+		}
+
+		protected IResource getResource(Path path) {
+			return getProject().findMember(path.toString());
+        }
+
+		@Override
+		protected Reader openFile(Path path) throws FileNotFoundException {
+			if(path.isAbsolute())
+				return super.openFile(path);
+			IResource res = getResource(path);
+			if(res == null || !res.exists())
+				throw new FileNotFoundException();
+			if(res.getType() != IResource.FILE)
+				throw new FileNotFoundException("Path is not a file");
+			try {
+				IFile f = (IFile)res;
+	            return new InputStreamReader(f.getContents(), f.getCharset());
+            } catch (UnsupportedEncodingException e) {
+            	throw new Error(e);
+            } catch (CoreException e) {
+            	throw new Error(e);
+            }
+		}
+		@Override
+		public Stream<Path> listFilesInFolder(Path path) throws IOException {
+			if(path.isAbsolute())
+				return super.listFilesInFolder(path);
+			IResource f = getResource(path);
+			if(f == null || (f.getType() != IResource.PROJECT && f.getType() != IResource.FOLDER)) {
+				return Stream.empty();
+			}
+			try {
+	            return Stream.of(((IContainer)f).members(IContainer.INCLUDE_HIDDEN)).map(res -> path.resolve(res.getName()));
+            } catch (CoreException e) {
+            	throw new Error(e);
+            }
+		}
+
+		@Override
+		protected boolean fileExists(Path path) {
+			if(path.isAbsolute())
+				return super.fileExists(path);
+		    final IResource res = getResource(path);
+			return res != null && res.exists();
+		}
+
+		@Override
+		protected long fileSize(Path path) throws IOException {
+			if(path.isAbsolute())
+				return super.fileSize(path);
+		    final IResource res = getResource(path);
+		    if(res.getType() != IResource.FILE)
+		    	return 0;
+		    try {
+	            return EFS.getStore(((IFile)res).getLocationURI()).fetchInfo().getLength();
+            } catch (CoreException e) {
+	            e.printStackTrace();
+	            Activator.log(e);
+	            return 0;
+            }
+		}
+
+		@Override
+		protected boolean isRegularFile(Path path) {
+			if(path.isAbsolute())
+				return super.isRegularFile(path);
+		    final IResource f = getResource(path);
+			return f != null && f.exists() && f.getType() == IResource.FILE;
+		}
+
+		@Override
+		protected boolean isDirectory(Path path) {
+			if(path.isAbsolute())
+				return super.isDirectory(path);
+			final IResource f = getResource(path);
+		    return f != null && f.exists() && f.getType() == IResource.FOLDER;
+		}
+
+	}
+
+	public final EclipseBanjoProjectLoader loader = new EclipseBanjoProjectLoader();
+
 	public static final String BUILDER_ID = "banjo.editor.banjoBuilder";
 	private static final String MARKER_TYPE = IMarker.PROBLEM;
 	public static final QualifiedName AST_CACHE_PROPERTY = new QualifiedName(Activator.PLUGIN_ID, "astCache");
@@ -87,7 +203,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 	public static int calculateLineNumber(IFile file, final int sourceOffset)
 			throws CoreException, IOException, UnsupportedEncodingException {
 		final long fileLength = EFS.getStore(file.getLocationURI()).fetchInfo().getLength();
-		final ParserReader in = new ParserReader(new InputStreamReader(file.getContents(), file.getCharset()), "", (int) fileLength);
+		final ParserReader in = new ParserReader(new InputStreamReader(file.getContents(), file.getCharset()), (int) fileLength);
 		try {
 			in.skip(sourceOffset);
 			final int lineNo = in.getCurrentLineNumber();
@@ -140,7 +256,6 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 			final IFile file = (IFile) resource;
 			deleteMarkers(file);
 			clearAstCache(file);
-			final SourceCodeParser parser = new SourceCodeParser();
 			IFileInfo fileInfo;
 			try {
 				fileInfo = EFS.getStore(file.getLocationURI()).fetchInfo();
@@ -165,11 +280,17 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 			}
 
 			try {
-				final ParserReader in = new ParserReader(reader, file.getName(), (int)fileInfo.getLength());
+				final String filePath = file.getProjectRelativePath().toFile().toString();
+				final ParserReader in = new ParserReader(reader, (int)fileInfo.getLength());
+				final SourceCodeParser parser = new SourceCodeParser(filePath);
 				final SourceExpr parseResult = parser.parse(in);
 				final SourceExprDesugarer desugarer = new SourceExprDesugarer();
 				final DesugarResult<CoreExpr> desugarResult = desugarer.desugar(parseResult);
-				addMarkers(file, parseResult, desugarResult);
+
+				TreeMap<Identifier, CoreExpr> bindings = loader.loadLocalAndLibraryBindings(filePath);
+
+				final CoreExpr ast = desugarResult.getValue();
+				addMarkers(file, parseResult, ast, bindings);
 			} catch (final IOException e) {
 				Activator.log("Error while reading "+file.getName(), e);
 				return;
@@ -183,31 +304,32 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 		}
 	}
 
-	public static boolean addMarkers(final IFile file, final SourceExpr parseResult, final DesugarResult<CoreExpr> desugarResult) {
+	public static boolean addMarkers(final IFile file, final SourceExpr parseTree, final CoreExpr ast, TreeMap<Identifier, CoreExpr> bindings) {
 		try {
-			file.setSessionProperty(AST_CACHE_PROPERTY, desugarResult);
+			file.setSessionProperty(AST_CACHE_PROPERTY, ast);
 		} catch (final CoreException e) {
 			Activator.log(e.getStatus());
 		}
-		return addParseProblemMarkers(file, parseResult) ||
-				addDesugarProblemMarkers(file, parseResult, desugarResult);
+		return addParseProblemMarkers(file, parseTree) ||
+				addDesugarProblemMarkers(file, ast, bindings);
 	}
 
-	public static boolean addDesugarProblemMarkers(final IFile file,
-			final SourceExpr parseResult,
-			final DesugarResult<CoreExpr> desugarResult) {
-		boolean haveDesugarProblems=false;
-		for(final BadExpr problem : desugarResult.getProblems()) {
-			haveDesugarProblems = true;
+	public static boolean addDesugarProblemMarkers(final IFile file, CoreExpr ast, TreeMap<Identifier, CoreExpr> bindings) {
+		final List<BadExpr> desugarProblems = CoreErrorGatherer.problems(ast);
+		final List<BadExpr> defRefProblems = DefRefAnalyser.problems(ast, bindings);
+		final List<BadExpr> problems = desugarProblems.append(defRefProblems);
+		final String fileWeAreMarking = file.getProjectRelativePath().toFile().toString();
+		for(final BadExpr problem : problems) {
 			problem.getSourceFileRanges().forEach(r -> {
-				addMarker(file, problem.getMessage(), r.getFileRange(), IMarker.SEVERITY_ERROR);
+				final String sourceFile = r.getSourceFile();
+				if(sourceFile.equals(fileWeAreMarking))
+					addMarker(file, problem.getMessage(), r.getFileRange(), IMarker.SEVERITY_ERROR);
 			});
 		}
-		return haveDesugarProblems;
+		return problems.isNotEmpty();
 	}
 
-	public static boolean addParseProblemMarkers(final IFile file,
-			final SourceExpr parseResult) {
+	public static boolean addParseProblemMarkers(final IFile file, final SourceExpr parseResult) {
 		boolean haveParseProblems=false;
 		for(final BadExpr problem : parseResult.getProblems()) {
 			haveParseProblems = true;
@@ -237,6 +359,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 
 	protected void fullBuild(final IProgressMonitor monitor) {
 		try {
+			clean(monitor);
 			getProject().accept(new BanjoBuilderResourceVisitor());
 		} catch (final CoreException e) {
 			Activator.log(e.getStatus());
