@@ -41,6 +41,7 @@ import banjo.parser.SourceCodeParser;
 import banjo.parser.util.FileRange;
 import banjo.parser.util.ParserReader;
 import banjo.parser.util.SourceFileRange;
+import fj.P2;
 import fj.data.List;
 import fj.data.TreeMap;
 
@@ -287,7 +288,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 				final SourceExprDesugarer desugarer = new SourceExprDesugarer();
 				final DesugarResult<CoreExpr> desugarResult = desugarer.desugar(parseResult);
 
-				TreeMap<Identifier, CoreExpr> bindings = loader.loadLocalAndLibraryBindings(filePath);
+				List<P2<Identifier, CoreExpr>> bindings = loader.loadLocalAndLibraryBindings(filePath);
 
 				final CoreExpr ast = desugarResult.getValue();
 				addMarkers(file, parseResult, ast, bindings);
@@ -304,7 +305,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 		}
 	}
 
-	public static boolean addMarkers(final IFile file, final SourceExpr parseTree, final CoreExpr ast, TreeMap<Identifier, CoreExpr> bindings) {
+	public static boolean addMarkers(final IFile file, final SourceExpr parseTree, final CoreExpr ast, List<P2<Identifier, CoreExpr>> bindings) {
 		try {
 			file.setSessionProperty(AST_CACHE_PROPERTY, ast);
 		} catch (final CoreException e) {
@@ -314,7 +315,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 				addDesugarProblemMarkers(file, ast, bindings);
 	}
 
-	public static boolean addDesugarProblemMarkers(final IFile file, CoreExpr ast, TreeMap<Identifier, CoreExpr> bindings) {
+	public static boolean addDesugarProblemMarkers(final IFile file, CoreExpr ast, List<P2<Identifier, CoreExpr>> bindings) {
 		final List<BadExpr> desugarProblems = CoreErrorGatherer.problems(ast);
 		final List<BadExpr> defRefProblems = DefRefAnalyser.problems(ast, bindings);
 		final List<BadExpr> problems = desugarProblems.append(defRefProblems);
