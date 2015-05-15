@@ -53,7 +53,7 @@ public class SourceScanner implements ITokenScanner {
 		}
 
 		@Override
-		public ITokenVisitor numberLiteral(FileRange range, Number number, String suffix) {
+		public ITokenVisitor numberLiteral(FileRange range, Number number) {
 			return token(SourceScanner.this.numberLiteralToken, range);
 		}
 

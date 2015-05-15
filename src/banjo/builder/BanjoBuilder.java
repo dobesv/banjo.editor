@@ -26,8 +26,8 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.QualifiedName;
 
-import banjo.desugar.SourceExprDesugarer;
-import banjo.desugar.SourceExprDesugarer.DesugarResult;
+import banjo.desugar.SourceExprToCoreExpr;
+import banjo.desugar.SourceExprToCoreExpr.DesugarResult;
 import banjo.dom.BadExpr;
 import banjo.dom.core.BadCoreExpr;
 import banjo.dom.core.CoreErrorGatherer;
@@ -285,7 +285,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 				final ParserReader in = new ParserReader(reader, (int)fileInfo.getLength());
 				final SourceCodeParser parser = new SourceCodeParser(filePath);
 				final SourceExpr parseResult = parser.parse(in);
-				final SourceExprDesugarer desugarer = new SourceExprDesugarer();
+				final SourceExprToCoreExpr desugarer = new SourceExprToCoreExpr();
 				final DesugarResult<CoreExpr> desugarResult = desugarer.desugar(parseResult);
 
 				List<P2<Identifier, CoreExpr>> bindings = loader.loadLocalAndLibraryBindings(filePath);

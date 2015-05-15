@@ -53,7 +53,7 @@ public class BanjoDoubleClickStrategy extends DefaultTextDoubleClickStrategy {
 		}
 
 		@Override
-		public WordFinder numberLiteral(FileRange range, Number number, String text) {
+		public WordFinder numberLiteral(FileRange range, Number number) {
 			return tryToken(range);
 		}
 
