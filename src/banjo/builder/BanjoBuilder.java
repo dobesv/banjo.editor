@@ -14,7 +14,6 @@ import org.eclipse.core.filesystem.EFS;
 import org.eclipse.core.filesystem.IFileInfo;
 import org.eclipse.core.resources.IContainer;
 import org.eclipse.core.resources.IFile;
-import org.eclipse.core.resources.IFolder;
 import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
@@ -37,13 +36,15 @@ import banjo.dom.source.SourceExpr;
 import banjo.dom.token.Identifier;
 import banjo.editor.Activator;
 import banjo.eval.ProjectLoader;
+import banjo.eval.coreexpr.BindingInstance;
+import banjo.eval.coreexpr.JavaRootEnvironment;
 import banjo.parser.SourceCodeParser;
 import banjo.parser.util.FileRange;
 import banjo.parser.util.ParserReader;
 import banjo.parser.util.SourceFileRange;
+import fj.P;
 import fj.P2;
 import fj.data.List;
-import fj.data.TreeMap;
 
 public class BanjoBuilder extends IncrementalProjectBuilder {
 	class BanjoBuilderDeltaVisitor implements IResourceDeltaVisitor {
@@ -288,7 +289,9 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 				final SourceExprToCoreExpr desugarer = new SourceExprToCoreExpr();
 				final DesugarResult<CoreExpr> desugarResult = desugarer.desugar(parseResult);
 
-				List<P2<Identifier, CoreExpr>> bindings = loader.loadLocalAndLibraryBindings(filePath);
+				final List<P2<Identifier, CoreExpr>> javaRootBindings = JavaRootEnvironment.INSTANCE.bindings.toStream()
+						.map(p -> P.p(new Identifier(p._1()), (CoreExpr)new Identifier(p._1()))).toList();
+				List<P2<Identifier, CoreExpr>> bindings = loader.loadLocalAndLibraryBindings(filePath).append(javaRootBindings);
 
 				final CoreExpr ast = desugarResult.getValue();
 				addMarkers(file, parseResult, ast, bindings);
