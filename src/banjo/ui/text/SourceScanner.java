@@ -9,10 +9,10 @@ import org.eclipse.jface.text.rules.IToken;
 import org.eclipse.jface.text.rules.ITokenScanner;
 import org.eclipse.jface.text.rules.Token;
 
-import banjo.dom.token.TokenVisitor;
-import banjo.parser.SourceCodeScanner;
-import banjo.parser.util.FileRange;
-import banjo.parser.util.ParserReader;
+import banjo.expr.token.TokenScanner;
+import banjo.expr.token.TokenVisitor;
+import banjo.expr.util.FileRange;
+import banjo.expr.util.ParserReader;
 
 public class SourceScanner implements ITokenScanner {
 
@@ -48,25 +48,25 @@ public class SourceScanner implements ITokenScanner {
 		}
 
 		@Override
-		public ITokenVisitor stringLiteral(FileRange range, String string) {
+		public ITokenVisitor stringLiteral(FileRange range, int indentColumn, String string) {
 			return token(SourceScanner.this.stringLiteralToken, SourceScanner.this.fieldToken, range);
 		}
 
 		@Override
-		public ITokenVisitor numberLiteral(FileRange range, Number number) {
+		public ITokenVisitor numberLiteral(FileRange range, int indentColumn, Number number) {
 			return token(SourceScanner.this.numberLiteralToken, range);
 		}
 
 		@Override
-		public ITokenVisitor identifier(FileRange range, String id) {
+		public ITokenVisitor identifier(FileRange range, int indentColumn, String id) {
 			return token(SourceScanner.this.defaultToken, SourceScanner.this.fieldToken, range);
 		}
 
 		@Override
-		public ITokenVisitor operator(FileRange range, String op) {
+		public ITokenVisitor operator(FileRange range, int indentColumn, String op) {
 			final IToken token = op.charAt(0) > 127 ? SourceScanner.this.unicodeOperatorToken : SourceScanner.this.operatorToken;
 			final ITokenVisitor result = token(token, range);
-			if(op.equals(".")) {
+			if(op.endsWith(".")) {
 				SourceScanner.this.inProjection = true;
 			}
 			return result;
@@ -115,7 +115,7 @@ public class SourceScanner implements ITokenScanner {
 	private final IToken self1, self2, self3, self4, self5;
 	private final IToken function1, function2, function3, function4, function5;
 
-	private final SourceCodeScanner scanner = new SourceCodeScanner();
+	private final TokenScanner scanner = new TokenScanner();
 	private ParserReader in = null;
 
 	private int tokenOffset;

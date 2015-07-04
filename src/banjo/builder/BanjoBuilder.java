@@ -25,23 +25,24 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.QualifiedName;
 
-import banjo.desugar.SourceExprToCoreExpr;
-import banjo.desugar.SourceExprToCoreExpr.DesugarResult;
-import banjo.dom.BadExpr;
-import banjo.dom.core.BadCoreExpr;
-import banjo.dom.core.CoreErrorGatherer;
-import banjo.dom.core.CoreExpr;
-import banjo.dom.core.DefRefAnalyser;
-import banjo.dom.source.SourceExpr;
-import banjo.dom.token.Identifier;
 import banjo.editor.Activator;
 import banjo.eval.ProjectLoader;
-import banjo.eval.coreexpr.BindingInstance;
-import banjo.eval.coreexpr.JavaRootEnvironment;
-import banjo.parser.SourceCodeParser;
-import banjo.parser.util.FileRange;
-import banjo.parser.util.ParserReader;
-import banjo.parser.util.SourceFileRange;
+import banjo.eval.expr.BindingInstance;
+import banjo.eval.expr.JavaRootEnvironment;
+import banjo.expr.BadExpr;
+import banjo.expr.core.BadCoreExpr;
+import banjo.expr.core.CoreErrorGatherer;
+import banjo.expr.core.CoreExpr;
+import banjo.expr.core.CoreExprFactory;
+import banjo.expr.core.DefRefAnalyser;
+import banjo.expr.core.ObjectLiteral;
+import banjo.expr.core.CoreExprFactory.DesugarResult;
+import banjo.expr.source.SourceExpr;
+import banjo.expr.source.SourceExprFactory;
+import banjo.expr.token.Identifier;
+import banjo.expr.util.FileRange;
+import banjo.expr.util.ParserReader;
+import banjo.expr.util.SourceFileRange;
 import fj.P;
 import fj.P2;
 import fj.data.List;
@@ -284,14 +285,14 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 			try {
 				final String filePath = file.getProjectRelativePath().toFile().toString();
 				final ParserReader in = new ParserReader(reader, (int)fileInfo.getLength());
-				final SourceCodeParser parser = new SourceCodeParser(filePath);
+				final SourceExprFactory parser = new SourceExprFactory(filePath);
 				final SourceExpr parseResult = parser.parse(in);
-				final SourceExprToCoreExpr desugarer = new SourceExprToCoreExpr();
+				final CoreExprFactory desugarer = new CoreExprFactory();
 				final DesugarResult<CoreExpr> desugarResult = desugarer.desugar(parseResult);
 
-				final List<P2<Identifier, CoreExpr>> javaRootBindings = JavaRootEnvironment.INSTANCE.bindings.toStream()
-						.map(p -> P.p(new Identifier(p._1()), (CoreExpr)new Identifier(p._1()))).toList();
-				List<P2<Identifier, CoreExpr>> bindings = loader.loadLocalAndLibraryBindings(filePath).append(javaRootBindings);
+				List<P2<Identifier, CoreExpr>> bindings = loader.loadLocalAndLibraryBindings(filePath).cons(
+						P.p(new Identifier(JavaRootEnvironment.JAVA_RUNTIME_ID), new ObjectLiteral())
+						);
 
 				final CoreExpr ast = desugarResult.getValue();
 				addMarkers(file, parseResult, ast, bindings);

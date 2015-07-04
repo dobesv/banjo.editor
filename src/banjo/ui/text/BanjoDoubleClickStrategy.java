@@ -9,10 +9,10 @@ import org.eclipse.jface.text.IDocument;
 import org.eclipse.jface.text.IRegion;
 import org.eclipse.jface.text.Region;
 
-import banjo.dom.token.TokenVisitor;
-import banjo.parser.SourceCodeScanner;
-import banjo.parser.util.FileRange;
-import banjo.parser.util.ParserReader;
+import banjo.expr.token.TokenScanner;
+import banjo.expr.token.TokenVisitor;
+import banjo.expr.util.FileRange;
+import banjo.expr.util.ParserReader;
 
 public class BanjoDoubleClickStrategy extends DefaultTextDoubleClickStrategy {
 
@@ -48,22 +48,22 @@ public class BanjoDoubleClickStrategy extends DefaultTextDoubleClickStrategy {
 		}
 
 		@Override
-		public WordFinder identifier(FileRange range, String id) {
+		public WordFinder identifier(FileRange range, int indentColumn, String id) {
 			return tryToken(range);
 		}
 
 		@Override
-		public WordFinder numberLiteral(FileRange range, Number number) {
+		public WordFinder numberLiteral(FileRange range, int indentColumn, Number number) {
 			return tryToken(range);
 		}
 
 		@Override
-		public WordFinder operator(FileRange range, String op) {
+		public WordFinder operator(FileRange range, int indentColumn, String op) {
 			return tryToken(range);
 		}
 
 		@Override
-		public WordFinder stringLiteral(FileRange range, String text) {
+		public WordFinder stringLiteral(FileRange range, int indentColumn, String text) {
 			return this;
 		}
 
@@ -85,7 +85,7 @@ public class BanjoDoubleClickStrategy extends DefaultTextDoubleClickStrategy {
 		}
 	}
 	protected final BanjoCharacterPairMatcher pairMatcher= new BanjoCharacterPairMatcher();
-	protected final SourceCodeScanner scanner= new SourceCodeScanner();
+	protected final TokenScanner scanner= new TokenScanner();
 
 
 	protected IRegion findAtom(IDocument document, int offset) {
