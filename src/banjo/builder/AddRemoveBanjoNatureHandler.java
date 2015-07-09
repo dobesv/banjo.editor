@@ -34,8 +34,7 @@ public class AddRemoveBanjoNatureHandler extends AbstractHandler {
 						toggleNature(project);
 					} catch (CoreException e) {
 						//TODO log something
-						throw new ExecutionException("Failed to toggle nature",
-								e);
+						throw new ExecutionException("Failed to toggle nature", e);
 					}
 				}
 			}
