@@ -1,18 +1,15 @@
 package banjo.builder;
 
 import java.io.BufferedReader;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.UnsupportedEncodingException;
 import java.nio.file.Path;
 import java.util.Map;
-import java.util.stream.Stream;
 
 import org.eclipse.core.filesystem.EFS;
 import org.eclipse.core.filesystem.IFileInfo;
-import org.eclipse.core.resources.IContainer;
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IProject;
@@ -26,28 +23,23 @@ import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.QualifiedName;
 
 import banjo.editor.Activator;
+import banjo.eval.Environment;
 import banjo.eval.ProjectLoader;
-import banjo.eval.environment.JavaRootEnvironment;
-import banjo.eval.expr.BindingInstance;
 import banjo.expr.BadExpr;
-import banjo.expr.core.BadCoreExpr;
 import banjo.expr.core.CoreErrorGatherer;
 import banjo.expr.core.CoreExpr;
 import banjo.expr.core.CoreExprFactory;
+import banjo.expr.core.CoreExprFactory.DesugarResult;
 import banjo.expr.core.DefRefAnalyser;
 import banjo.expr.core.ObjectLiteral;
-import banjo.expr.core.CoreExprFactory.DesugarResult;
 import banjo.expr.source.SourceExpr;
 import banjo.expr.source.SourceExprFactory;
 import banjo.expr.token.Identifier;
 import banjo.expr.util.FileRange;
 import banjo.expr.util.ParserReader;
-import banjo.expr.util.SourceFileRange;
-import fj.Ord;
 import fj.P;
 import fj.P2;
 import fj.data.List;
-import fj.data.TreeMap;
 
 public class BanjoBuilder extends IncrementalProjectBuilder {
 	class BanjoBuilderDeltaVisitor implements IResourceDeltaVisitor {
@@ -310,7 +302,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 				
 				ProjectLoader loader = new ProjectLoader();
 				List<P2<Identifier, CoreExpr>> bindings = loader.loadLocalAndLibraryBindings(filePath).cons(
-						P.p(new Identifier(JavaRootEnvironment.JAVA_RUNTIME_ID), new ObjectLiteral())
+						P.p(new Identifier(Environment.JAVA_RUNTIME_ID), new ObjectLiteral())
 						);
 
 				final CoreExpr ast = desugarResult.getValue();
