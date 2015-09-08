@@ -218,8 +218,17 @@ public class EclipseWorkspacePath implements Path {
 		return fileSystem.workspace.getRoot().findMember(path);
 	}
 
+	public IPath toIPath() {
+		if(path.segmentCount() == 0) {
+			return fileSystem.workspace.getRoot().getLocation();
+		}
+		if(path.segmentCount() == 1) {
+			return fileSystem.workspace.getRoot().getProject(path.segment(0)).getLocation();
+		}
+		return getFile().getLocation();
+	}
 	public Path toFileSystemPath() {
-		return getFile().getLocation().toFile().toPath();
+		return toIPath().toFile().toPath();
 	}
 
 	/**
