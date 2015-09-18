@@ -69,7 +69,11 @@ public class EclipseWorkspaceFileSystemProvider extends FileSystemProvider {
 		EclipseWorkspacePath p = (EclipseWorkspacePath)path;
 		
 		// TODO This isn't going to work for non-local files 
-		return Files.newByteChannel(p.toFileSystemPath(), options, attrs);
+		Path pp = p.toFileSystemPath();
+		if(pp == null) {
+			throw new FileNotFoundException("File is is a non-existant or non-local project");
+		}
+		return Files.newByteChannel(pp, options, attrs);
 	}
 
 	@Override
@@ -162,13 +166,20 @@ public class EclipseWorkspaceFileSystemProvider extends FileSystemProvider {
 
 	@Override
 	public FileStore getFileStore(Path path) throws IOException {
-		return Files.getFileStore(((EclipseWorkspacePath)path).toFileSystemPath());
+		Path pp = ((EclipseWorkspacePath)path).toFileSystemPath();
+		if(pp == null) {
+			throw new FileNotFoundException("File is is a non-existant or non-local project");
+		}
+		return Files.getFileStore(pp);
 	}
 
 	@Override
 	public void checkAccess(Path path, AccessMode... modes) throws IOException {
 		EclipseWorkspacePath p = (EclipseWorkspacePath)path;
 		Path pp = p.toFileSystemPath();
+		if(pp == null) {
+			throw new FileNotFoundException("File is is a non-existant or non-local project");
+		}
 		if(modes.length == 0) {
 			if(!Files.exists(pp))
 				throw new FileNotFoundException();
@@ -194,27 +205,40 @@ public class EclipseWorkspaceFileSystemProvider extends FileSystemProvider {
 	@Override
 	public <V extends FileAttributeView> V getFileAttributeView(Path path, Class<V> type, LinkOption... options) {
 		EclipseWorkspacePath p = (EclipseWorkspacePath)path;
-		return Files.getFileAttributeView(p.toFileSystemPath(), type, options);
+		Path pp = p.toFileSystemPath();
+		return Files.getFileAttributeView(pp, type, options);
 	}
 
 	@Override
 	public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options)
 			throws IOException {
 		EclipseWorkspacePath p = (EclipseWorkspacePath)path;
-		return Files.readAttributes(p.toFileSystemPath(), type, options);
+		Path pp = p.toFileSystemPath();
+		if(pp == null) {
+			throw new FileNotFoundException("File is is a non-existant or non-local project");
+		}
+		return Files.readAttributes(pp, type, options);
 	}
 
 	@Override
 	public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options)
 			throws IOException {
 		EclipseWorkspacePath p = (EclipseWorkspacePath)path;
-		return Files.readAttributes(p.toFileSystemPath(), attributes, options);
+		Path pp = p.toFileSystemPath();
+		if(pp == null) {
+			throw new FileNotFoundException("File is is a non-existant or non-local project");
+		}
+		return Files.readAttributes(pp, attributes, options);
 	}
 
 	@Override
 	public void setAttribute(Path path, String attribute, Object value, LinkOption... options) throws IOException {
 		EclipseWorkspacePath p = (EclipseWorkspacePath)path;
-		Files.setAttribute(p.toFileSystemPath(), attribute, value, options);
+		Path pp = p.toFileSystemPath();
+		if(pp == null) {
+			throw new FileNotFoundException("File is is a non-existant or non-local project");
+		}
+		Files.setAttribute(pp, attribute, value, options);
 	}
 	
 }

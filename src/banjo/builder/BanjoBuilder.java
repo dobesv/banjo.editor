@@ -23,8 +23,8 @@ import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.QualifiedName;
 
 import banjo.editor.Activator;
-import banjo.eval.Environment;
 import banjo.eval.ProjectLoader;
+import banjo.eval.environment.Environment;
 import banjo.expr.BadExpr;
 import banjo.expr.core.CoreErrorGatherer;
 import banjo.expr.core.CoreExpr;

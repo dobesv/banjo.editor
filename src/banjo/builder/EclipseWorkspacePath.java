@@ -56,6 +56,8 @@ public class EclipseWorkspacePath implements Path {
 
 	@Override
 	public Path getParent() {
+		if(path.segmentCount() == 0)
+			return null;
 		return of(path.removeLastSegments(1));
 	}
 
@@ -218,6 +220,11 @@ public class EclipseWorkspacePath implements Path {
 		return fileSystem.workspace.getRoot().findMember(path);
 	}
 
+	/**
+	 * Get an IPath for this file path.  If this path refers to a project that doesn't exist or is not
+	 * located on the local filesystem, returns null.  Otherwise, the project is used to calculate the
+	 * path.  The target file/folder need not exist.
+	 */
 	public IPath toIPath() {
 		if(path.segmentCount() == 0) {
 			return fileSystem.workspace.getRoot().getLocation();
@@ -227,19 +234,29 @@ public class EclipseWorkspacePath implements Path {
 		}
 		return getFile().getLocation();
 	}
+	
+	/**
+	 * Get a filesystem path.  If this path is in a project that doesn't exist or is not
+	 * located on the local filesystem, returns null.  Otherwise, the target file/folder
+	 * need not exist.
+	 */
 	public Path toFileSystemPath() {
-		return toIPath().toFile().toPath();
+		IPath ipath = toIPath();
+		if(ipath == null)
+			return null;
+		File file = ipath.toFile();
+		return file.toPath();
 	}
 
 	/**
-	 * Get a folder handle without check if anything actually exists.
+	 * Get a folder handle without checking if anything actually exists.
 	 */
 	public IFolder getFolder() {
 		return fileSystem.workspace.getRoot().getFolder(path);
 	}
 
 	/**
-	 * Get a file handle without check if anything actually exists.
+	 * Get a file handle without checking if anything actually exists.
 	 */
 	public IFile getFile() {
 		return fileSystem.workspace.getRoot().getFile(path);
