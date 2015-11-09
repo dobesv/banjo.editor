@@ -32,13 +32,12 @@ import banjo.expr.core.CoreExprFactory;
 import banjo.expr.core.CoreExprFactory.DesugarResult;
 import banjo.expr.core.DefRefAnalyser;
 import banjo.expr.core.ObjectLiteral;
+import banjo.expr.core.Slot;
 import banjo.expr.source.SourceExpr;
 import banjo.expr.source.SourceExprFactory;
 import banjo.expr.token.Identifier;
 import banjo.expr.util.FileRange;
 import banjo.expr.util.ParserReader;
-import fj.P;
-import fj.P2;
 import fj.data.List;
 
 public class BanjoBuilder extends IncrementalProjectBuilder {
@@ -301,8 +300,8 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 				
 				
 				ProjectLoader loader = new ProjectLoader();
-				List<P2<Identifier, CoreExpr>> bindings = loader.loadLocalAndLibraryBindings(filePath).cons(
-						P.p(new Identifier(Environment.JAVA_RUNTIME_ID), new ObjectLiteral())
+				List<Slot> bindings = loader.loadLocalAndLibraryBindings(filePath).cons(
+						new Slot(new Identifier(Environment.JAVA_RUNTIME_ID), new ObjectLiteral())
 						);
 
 				final CoreExpr ast = desugarResult.getValue();
@@ -320,7 +319,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 		}
 	}
 
-	public static boolean addMarkers(final IFile file, final SourceExpr parseTree, final CoreExpr ast, List<P2<Identifier, CoreExpr>> bindings) {
+	public static boolean addMarkers(final IFile file, final SourceExpr parseTree, final CoreExpr ast, List<Slot> bindings) {
 		try {
 			file.setSessionProperty(AST_CACHE_PROPERTY, ast);
 		} catch (final CoreException e) {
@@ -330,7 +329,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 				addDesugarProblemMarkers(file, ast, bindings);
 	}
 
-	public static boolean addDesugarProblemMarkers(final IFile file, CoreExpr ast, List<P2<Identifier, CoreExpr>> bindings) {
+	public static boolean addDesugarProblemMarkers(final IFile file, CoreExpr ast, List<Slot> bindings) {
 		final List<BadExpr> desugarProblems = CoreErrorGatherer.problems(ast);
 		final List<BadExpr> defRefProblems = DefRefAnalyser.problems(ast, bindings);
 		final List<BadExpr> problems = desugarProblems.append(defRefProblems);
