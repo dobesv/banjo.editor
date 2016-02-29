@@ -1,9 +1,7 @@
 package banjo.builder;
 
-import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.Reader;
 import java.io.UnsupportedEncodingException;
 import java.nio.file.Path;
 import java.util.Map;
@@ -23,19 +21,11 @@ import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.QualifiedName;
 
 import banjo.editor.Activator;
-import banjo.eval.ProjectLoader;
-import banjo.eval.environment.Environment;
 import banjo.expr.BadExpr;
 import banjo.expr.core.CoreErrorGatherer;
 import banjo.expr.core.CoreExpr;
 import banjo.expr.core.CoreExprFactory;
-import banjo.expr.core.CoreExprFactory.DesugarResult;
-import banjo.expr.core.DefRefAnalyser;
-import banjo.expr.core.ObjectLiteral;
-import banjo.expr.core.Slot;
 import banjo.expr.source.SourceExpr;
-import banjo.expr.source.SourceExprFactory;
-import banjo.expr.token.Identifier;
 import banjo.expr.util.FileRange;
 import banjo.expr.util.ParserReader;
 import fj.data.List;
@@ -273,65 +263,34 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 				Activator.log(e.getStatus());
 				return;
 			}
-			Reader reader;
-			try {
-				reader = new BufferedReader(new InputStreamReader(file.getContents(true), file.getCharset()));
-			} catch (final UnsupportedEncodingException e) {
-				Activator.log(e);
-				return;
-			} catch (final CoreException e) {
-				Activator.log(e.getStatus());
-				return;
-			}
 			if(fileInfo.getLength() > Integer.MAX_VALUE) {
 				// TODO Report error
 				Activator.log("File too large to parse; files must be less than 2GB.");
 				return;
 			}
 
-			try {
-				EclipseWorkspaceFileSystem fs = new EclipseWorkspaceFileSystem(new EclipseWorkspaceFileSystemProvider(), this.getProject().getWorkspace(), null);
-				final Path filePath = fs.getPath(file);
-				final ParserReader in = new ParserReader(reader, (int)fileInfo.getLength());
-				final SourceExprFactory parser = new SourceExprFactory(filePath);
-				final SourceExpr parseResult = parser.parse(in);
-				final CoreExprFactory desugarer = new CoreExprFactory();
-				final DesugarResult<CoreExpr> desugarResult = desugarer.desugar(parseResult);
-				
-				
-				ProjectLoader loader = new ProjectLoader();
-				List<Slot> bindings = loader.loadLocalAndLibraryBindings(filePath).cons(
-						new Slot(new Identifier(Environment.JAVA_RUNTIME_ID), new ObjectLiteral())
-						);
-
-				final CoreExpr ast = desugarResult.getValue();
-				addMarkers(file, parseResult, ast, bindings);
-			} catch (final IOException e) {
-				Activator.log("Error while reading "+file.getName(), e);
-				return;
-			} finally {
-				try {
-					reader.close();
-				} catch (final IOException e) {
-					Activator.log("Error while closing "+file.getName(), e);
-				}
-			}
+            EclipseWorkspaceFileSystem fs = new EclipseWorkspaceFileSystem(new EclipseWorkspaceFileSystemProvider(), this.getProject().getWorkspace(), null);
+            // Load the whole project surrounding that file
+            final Path filePath = fs.getPath(file);
+            List<Path> paths = CoreExprFactory.projectSourcePathsForFile(filePath);
+            CoreExpr projectAst = CoreExprFactory.INSTANCE.loadFromDirectories(paths);
+            addMarkers(file, projectAst);
 		}
 	}
 
-	public static boolean addMarkers(final IFile file, final SourceExpr parseTree, final CoreExpr ast, List<Slot> bindings) {
+    public static boolean addMarkers(final IFile file, final CoreExpr projectAst) {
 		try {
-			file.setSessionProperty(AST_CACHE_PROPERTY, ast);
+            file.setSessionProperty(AST_CACHE_PROPERTY, projectAst);
 		} catch (final CoreException e) {
 			Activator.log(e.getStatus());
 		}
-		return addParseProblemMarkers(file, parseTree) ||
-				addDesugarProblemMarkers(file, ast, bindings);
+        return addDesugarProblemMarkers(file, projectAst);
 	}
 
-	public static boolean addDesugarProblemMarkers(final IFile file, CoreExpr ast, List<Slot> bindings) {
-		final List<BadExpr> desugarProblems = CoreErrorGatherer.problems(ast);
-		final List<BadExpr> defRefProblems = DefRefAnalyser.problems(ast, bindings);
+    public static boolean addDesugarProblemMarkers(final IFile file, CoreExpr projectAst) {
+        final List<BadExpr> desugarProblems = CoreErrorGatherer.problems(projectAst);
+        final List<BadExpr> defRefProblems = List.nil(); // DefRefAnalyser.problems(projectAst,
+                                                           // projectAst.slots);
 		final List<BadExpr> problems = desugarProblems.append(defRefProblems);
 		final Path fileWeAreMarking = EclipseWorkspacePath.of(file, null);
 		for(final BadExpr problem : problems) {

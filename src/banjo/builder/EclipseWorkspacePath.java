@@ -148,7 +148,7 @@ public class EclipseWorkspacePath implements Path {
 	@Override
 	public URI toUri() {
 		try {
-			return new URI("eclipse", null, path.toOSString(), null);
+            return new URI("eclipse", null, path.makeAbsolute().toString(), null);
 		} catch (URISyntaxException e) {
 			throw new Error(e);
 		}
@@ -262,6 +262,10 @@ public class EclipseWorkspacePath implements Path {
 		return fileSystem.workspace.getRoot().getFile(path);
 	}
 	
+    @Override
+    public String toString() {
+        return toUri().toString();
+    }
 	
 	public static EclipseWorkspacePath of(IResource res, IProgressMonitor monitor) {
 		return new EclipseWorkspaceFileSystem(new EclipseWorkspaceFileSystemProvider(), res.getWorkspace(), monitor).getPath(res);
