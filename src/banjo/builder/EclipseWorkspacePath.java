@@ -13,9 +13,11 @@ import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
 import java.util.Iterator;
 
+import org.eclipse.core.resources.IContainer;
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IFolder;
 import org.eclipse.core.resources.IResource;
+import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
 
@@ -249,11 +251,31 @@ public class EclipseWorkspacePath implements Path {
 	}
 
 	/**
-	 * Get a folder handle without checking if anything actually exists.
-	 */
-	public IFolder getFolder() {
-		return fileSystem.workspace.getRoot().getFolder(path);
+     * Get a container handle without checking if anything actually exists.
+     */
+	public IContainer getContainer() {
+        IWorkspaceRoot root = fileSystem.workspace.getRoot();
+        if(path.segmentCount() == 0) {
+            return root;
+        }
+        if(path.segmentCount() == 1) {
+            return root.getProject(path.segment(0));
+        }
+        return root.getFolder(path);
 	}
+
+    /**
+     * Get a folder handle without checking if anything actually exists. Returns
+     * null if the path has fewer than 2 segments (this cannot be used to refer
+     * to the workspace or a project).
+     */
+    public IFolder getFolder() {
+        IWorkspaceRoot root = fileSystem.workspace.getRoot();
+        if(path.segmentCount() <= 1) {
+            return null;
+        }
+        return root.getFolder(path);
+    }
 
 	/**
 	 * Get a file handle without checking if anything actually exists.

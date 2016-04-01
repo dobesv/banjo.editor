@@ -13,7 +13,6 @@ import java.nio.file.FileStore;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
-import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
@@ -27,6 +26,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
+import org.eclipse.core.resources.IContainer;
+import org.eclipse.core.resources.IFolder;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.runtime.CoreException;
@@ -80,7 +81,8 @@ public class EclipseWorkspaceFileSystemProvider extends FileSystemProvider {
 	public DirectoryStream<Path> newDirectoryStream(Path dir, Filter<? super Path> filter) throws IOException {
 		EclipseWorkspacePath p = (EclipseWorkspacePath)dir;
 		try {
-			Stream<IResource> a = Stream.of(p.getFolder().members());
+            IContainer folder = p.getContainer();
+            Stream<IResource> a = Stream.of(folder.members());
 			Stream<Path> paths = a.map(res -> p.of(res.getFullPath()));
 			return new DirectoryStream<Path>() {
 				@Override
@@ -101,7 +103,9 @@ public class EclipseWorkspaceFileSystemProvider extends FileSystemProvider {
 	public void createDirectory(Path dir, FileAttribute<?>... attrs) throws IOException {
 		EclipseWorkspacePath p = (EclipseWorkspacePath)dir;
 		try {
-			p.getFolder().create(true, true, p.fileSystem.progress);
+            IFolder folder = p.getFolder();
+            if(folder != null)
+                folder.create(true, true, p.fileSystem.progress);
 		} catch (CoreException e) {
 			throw new IOException(e);
 		}
