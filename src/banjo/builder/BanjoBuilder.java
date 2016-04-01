@@ -5,6 +5,13 @@ import java.io.InputStreamReader;
 import java.io.UnsupportedEncodingException;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import org.eclipse.core.filesystem.EFS;
 import org.eclipse.core.filesystem.IFileInfo;
@@ -21,14 +28,20 @@ import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.QualifiedName;
 
 import banjo.editor.Activator;
+import banjo.eval.environment.Environment;
 import banjo.expr.BadExpr;
 import banjo.expr.core.CoreErrorGatherer;
 import banjo.expr.core.CoreExpr;
 import banjo.expr.core.CoreExprFactory;
+import banjo.expr.core.DefRefAnalyser;
+import banjo.expr.core.TestAndExampleGatherer;
 import banjo.expr.source.SourceExpr;
+import banjo.expr.source.SourceExprFromFile;
 import banjo.expr.util.FileRange;
 import banjo.expr.util.ParserReader;
+import banjo.expr.util.SourceFileRange;
 import fj.data.List;
+import fj.data.Set;
 
 public class BanjoBuilder extends IncrementalProjectBuilder {
 	class BanjoBuilderDeltaVisitor implements IResourceDeltaVisitor {
@@ -79,113 +92,11 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 			return true;
 		}
 	}
-	
-//	class EclipseBanjoProjectLoader extends ProjectLoader {
-//		@Override
-//		public CoreExpr loadSourceCode(Path path) {
-//			if(path.isAbsolute())
-//				return super.loadSourceCode(path);
-//			IResource f = getResource(path);
-//			if(f == null || !f.exists())
-//		    	return new BadCoreExpr(new SourceFileRange(path.toString(), FileRange.EMPTY), "Error reading file '"+path+"': File not found");
-//			try {
-//	            CoreExpr cached = (CoreExpr)f.getSessionProperty(AST_CACHE_PROPERTY);
-//	            if(cached != null) {
-//	            	return cached;
-//	            }
-//			    cached = super.loadSourceCode(path);
-//			    f.setSessionProperty(AST_CACHE_PROPERTY, cached);
-//			    return cached;
-//            } catch (CoreException e) {
-//	            e.printStackTrace();
-//		    	return new BadCoreExpr(new SourceFileRange(path.toString(), FileRange.EMPTY), "Error reading file '"+path+"': "+e);
-//            }
-//		}
-//
-//		protected IResource getResource(Path path) {
-//			return getProject().findMember(path.toString());
-//        }
-//
-//		@Override
-//		protected Reader openFile(Path path) throws FileNotFoundException {
-//			if(path.isAbsolute())
-//				return super.openFile(path);
-//			IResource res = getResource(path);
-//			if(res == null || !res.exists())
-//				throw new FileNotFoundException();
-//			if(res.getType() != IResource.FILE)
-//				throw new FileNotFoundException("Path is not a file");
-//			try {
-//				IFile f = (IFile)res;
-//	            return new InputStreamReader(f.getContents(), f.getCharset());
-//            } catch (UnsupportedEncodingException e) {
-//            	throw new Error(e);
-//            } catch (CoreException e) {
-//            	throw new Error(e);
-//            }
-//		}
-//		@Override
-//		public Stream<Path> listFilesInFolder(Path path) throws IOException {
-//			if(path.isAbsolute())
-//				return super.listFilesInFolder(path);
-//			IResource f = getResource(path);
-//			if(f == null || (f.getType() != IResource.PROJECT && f.getType() != IResource.FOLDER)) {
-//				return Stream.empty();
-//			}
-//			try {
-//	            return Stream.of(((IContainer)f).members(IContainer.INCLUDE_HIDDEN)).map(res -> path.resolve(res.getName()));
-//            } catch (CoreException e) {
-//            	throw new Error(e);
-//            }
-//		}
-//
-//		@Override
-//		protected boolean fileExists(Path path) {
-//			if(path.isAbsolute())
-//				return super.fileExists(path);
-//		    final IResource res = getResource(path);
-//			return res != null && res.exists();
-//		}
-//
-//		@Override
-//		protected long fileSize(Path path) throws IOException {
-//			if(path.isAbsolute())
-//				return super.fileSize(path);
-//		    final IResource res = getResource(path);
-//		    if(res.getType() != IResource.FILE)
-//		    	return 0;
-//		    try {
-//	            return EFS.getStore(((IFile)res).getLocationURI()).fetchInfo().getLength();
-//            } catch (CoreException e) {
-//	            e.printStackTrace();
-//	            Activator.log(e);
-//	            return 0;
-//            }
-//		}
-//
-//		@Override
-//		protected boolean isRegularFile(Path path) {
-//			if(path.isAbsolute())
-//				return super.isRegularFile(path);
-//		    final IResource f = getResource(path);
-//			return f != null && f.exists() && f.getType() == IResource.FILE;
-//		}
-//
-//		@Override
-//		protected boolean isDirectory(Path path) {
-//			if(path.isAbsolute())
-//				return super.isDirectory(path);
-//			final IResource f = getResource(path);
-//		    return f != null && f.exists() && f.getType() == IResource.FOLDER;
-//		}
-//
-//	}
-//
-//	public final EclipseBanjoProjectLoader loader = new EclipseBanjoProjectLoader();
 
 	public static final String BUILDER_ID = "banjo.editor.banjoBuilder";
 	private static final String MARKER_TYPE = IMarker.PROBLEM;
 	public static final QualifiedName AST_CACHE_PROPERTY = new QualifiedName(Activator.PLUGIN_ID, "astCache");
+    public static ExecutorService executor = Executors.newCachedThreadPool();
 
 	private static void addMarker(IFile file, String message, FileRange range, int severity) {
 		try {
@@ -272,36 +183,132 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
             EclipseWorkspaceFileSystem fs = new EclipseWorkspaceFileSystem(new EclipseWorkspaceFileSystemProvider(), this.getProject().getWorkspace(), null);
             // Load the whole project surrounding that file
             final Path filePath = fs.getPath(file);
-            List<Path> paths = CoreExprFactory.projectSourcePathsForFile(filePath);
-            CoreExpr projectAst = CoreExprFactory.INSTANCE.loadFromDirectories(paths);
-            addMarkers(file, projectAst);
+
+            // Check if the file parses first, if it doesn't even parse we can
+            // skip the later steps
+            List<BadExpr> parseProblems = SourceExprFromFile.forPath(filePath).getProblems();
+            if(!parseProblems.isEmpty()) {
+                addMarkersForProblems(file, parseProblems);
+            } else {
+                List<Path> paths = CoreExprFactory.projectSourcePathsForFile(filePath);
+                CoreExpr projectAst = CoreExprFactory.INSTANCE.loadFromDirectories(paths);
+                addMarkers(file, projectAst);
+            }
 		}
 	}
 
-    public static boolean addMarkers(final IFile file, final CoreExpr projectAst) {
+    public void addMarkers(final IFile file, final CoreExpr projectAst) {
 		try {
             file.setSessionProperty(AST_CACHE_PROPERTY, projectAst);
 		} catch (final CoreException e) {
 			Activator.log(e.getStatus());
 		}
-        return addDesugarProblemMarkers(file, projectAst);
+
+        if(addDesugarProblemMarkers(file, projectAst))
+            return;
+
+        // TODO Def/ref analysis needs type information now ... only the
+        // full-blown type directed analysis will work now
+        // addDefRefProblemMarkers(file, projectAst);
+
+        if(addExampleProblemMarkers(file, projectAst))
+            return;
+
+        if(addUnitTestProblemMarkers(file, projectAst))
+            return;
+
 	}
 
-    public static boolean addDesugarProblemMarkers(final IFile file, CoreExpr projectAst) {
-        final List<BadExpr> desugarProblems = CoreErrorGatherer.problems(projectAst);
-        final List<BadExpr> defRefProblems = List.nil(); // DefRefAnalyser.problems(projectAst,
-                                                           // projectAst.slots);
-		final List<BadExpr> problems = desugarProblems.append(defRefProblems);
-		final Path fileWeAreMarking = EclipseWorkspacePath.of(file, null);
+    public boolean addDefRefProblemMarkers(final IFile file, CoreExpr projectAst) {
+        final List<BadExpr> problems = callAsync(() -> DefRefAnalyser.problems(projectAst), List.nil());
+        return addMarkersForProblems(file, problems);
+    }
+    public boolean addDesugarProblemMarkers(final IFile file, CoreExpr projectAst) {
+        List<BadExpr> problems = getDesugarProblems(projectAst);
+        return addMarkersForProblems(file, problems);
+    }
+
+    public boolean addMarkersForProblems(final IFile file, List<BadExpr> problems) {
+        final Path fileWeAreMarking = EclipseWorkspacePath.of(file, null);
+        boolean addedMarker = false;
 		for(final BadExpr problem : problems) {
-			problem.getSourceFileRanges().forEach(r -> {
-				final Path sourceFile = r.getSourceFile();
-				if(sourceFile.equals(fileWeAreMarking))
-					addMarker(file, problem.getMessage(), r.getFileRange(), IMarker.SEVERITY_ERROR);
-			});
+            Set<SourceFileRange> rangesInTargetFile = problem.getSourceFileRanges().filter(r -> r.getSourceFile().equals(fileWeAreMarking));
+            if(rangesInTargetFile.isEmpty())
+                continue;
+            SourceFileRange r = rangesInTargetFile.iterator().next();
+            addMarker(file, problem.getMessage(), r.getFileRange(), IMarker.SEVERITY_ERROR);
+            addedMarker = true;
 		}
-		return problems.isNotEmpty();
-	}
+        return addedMarker;
+    }
+
+    public boolean addExampleProblemMarkers(final IFile file, CoreExpr projectAst) {
+        Callable<List<CoreExpr>> gatherer = () -> TestAndExampleGatherer.findExamples(projectAst);
+        return addTestFailureMarkers(file, gatherer);
+    }
+
+    public boolean addUnitTestProblemMarkers(final IFile file, CoreExpr projectAst) {
+        Callable<List<CoreExpr>> gatherer = () -> TestAndExampleGatherer.findTests(projectAst);
+        return addTestFailureMarkers(file, gatherer);
+    }
+
+    public boolean addTestFailureMarkers(final IFile file, Callable<List<CoreExpr>> gatherer) throws Error {
+        List<CoreExpr> tests = callAsync(gatherer, List.nil());
+        if(tests.isEmpty())
+            return false;
+        final Path fileWeAreMarking = EclipseWorkspacePath.of(file, null);
+        Environment environment = Environment.forSourcePath(fileWeAreMarking);
+        boolean failedTest = false;
+        for(CoreExpr e : tests) {
+            CoreExpr noscope = TestAndExampleGatherer.stripScope(e);
+            Set<SourceFileRange> rangesInTargetFile = noscope.getSourceFileRanges().filter(r -> r.getSourceFile().equals(fileWeAreMarking));
+            if(rangesInTargetFile.isEmpty())
+                continue;
+            SourceFileRange r = rangesInTargetFile.iterator().next();
+            boolean success = callAsync(() -> environment.eval(e).isTruthy(), true);
+            if(!success) {
+                failedTest = true;
+                addMarker(file, "Failed: " + noscope.toSource(), r.getFileRange(), IMarker.SEVERITY_ERROR);
+            } else {
+                addMarker(file, "Passed: " + noscope.toSource(), r.getFileRange(), IMarker.SEVERITY_INFO);
+            }
+        }
+        return failedTest;
+    }
+
+    public List<BadExpr> getDesugarProblems(CoreExpr projectAst) throws Error {
+        return callAsync(() -> CoreErrorGatherer.problems(projectAst), List.nil());
+    }
+
+    public <T> T callAsync(Callable<T> problemsCalculation, T fallback) throws Error {
+        // If the job was already interrupted, always use the fallback value
+        if(isInterrupted())
+            return fallback;
+
+        // Fire off the async job
+        Future<T> desugarProblemsFuture = executor.submit(problemsCalculation);
+        for(;;) {
+            try {
+                // Wait 100ms each time to see if the job finished
+                return desugarProblemsFuture.get(100, TimeUnit.MILLISECONDS);
+            } catch(TimeoutException te) {
+                // If we are still waiting and we were requested to abort by
+                // eclipse, cancel the job
+                if(isInterrupted())
+                    desugarProblemsFuture.cancel(true);
+
+                // and return the fallback value
+                return fallback;
+            } catch(InterruptedException ie) {
+                // If the thread was interrupted for any other reason, return
+                // the fallback value
+                return fallback;
+            } catch(ExecutionException e) {
+                // If an exception was thrown in the thread, throw an exception
+                throw new Error(e);
+            }
+        }
+    }
 
 	public static boolean addParseProblemMarkers(final IFile file, final SourceExpr parseResult) {
 		boolean haveParseProblems=false;
