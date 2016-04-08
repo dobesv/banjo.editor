@@ -53,7 +53,7 @@ public class EclipseWorkspacePath implements Path {
 
 	@Override
 	public Path getFileName() {
-		return of(path.makeRelativeTo(path.makeRelativeTo(path.removeLastSegments(1))));
+        return getName(path.segmentCount() - 1);
 	}
 
 	@Override
@@ -286,7 +286,9 @@ public class EclipseWorkspacePath implements Path {
 	
     @Override
     public String toString() {
-        return toUri().toString();
+        if(path.isAbsolute())
+            return toUri().toString();
+        return path.toString();
     }
 	
 	public static EclipseWorkspacePath of(IResource res, IProgressMonitor monitor) {

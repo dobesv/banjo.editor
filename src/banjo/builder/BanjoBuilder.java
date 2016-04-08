@@ -25,7 +25,7 @@ import org.eclipse.core.resources.IResourceVisitor;
 import org.eclipse.core.resources.IncrementalProjectBuilder;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
-import org.eclipse.core.runtime.QualifiedName;
+import org.eclipse.core.runtime.SubProgressMonitor;
 
 import banjo.editor.Activator;
 import banjo.eval.environment.Environment;
@@ -33,72 +33,96 @@ import banjo.expr.BadExpr;
 import banjo.expr.core.CoreErrorGatherer;
 import banjo.expr.core.CoreExpr;
 import banjo.expr.core.CoreExprFactory;
-import banjo.expr.core.DefRefAnalyser;
+import banjo.expr.core.CoreExprFromFile;
 import banjo.expr.core.TestAndExampleGatherer;
 import banjo.expr.source.SourceExpr;
 import banjo.expr.source.SourceExprFromFile;
 import banjo.expr.util.FileRange;
 import banjo.expr.util.ParserReader;
 import banjo.expr.util.SourceFileRange;
+import fj.Ord;
+import fj.P;
+import fj.P2;
 import fj.data.List;
+import fj.data.Option;
 import fj.data.Set;
+import fj.data.TreeMap;
 
 public class BanjoBuilder extends IncrementalProjectBuilder {
-	class BanjoBuilderDeltaVisitor implements IResourceDeltaVisitor {
-		final IProgressMonitor monitor;
-		
-		public BanjoBuilderDeltaVisitor(IProgressMonitor monitor) {
-			super();
-			this.monitor = monitor;
-		}
+    abstract class BanjoBuilderVisitor {
+        Set<IFile> banjoSourceFiles = Set.empty(Ord.stringOrd.contramap(IFile::toString));
+        int numberOfSourceFiles = 0;
 
-		/*
-		 * (non-Javadoc)
-		 *
-		 * @see org.eclipse.core.resources.IResourceDeltaVisitor#visit(org.eclipse.core.resources.IResourceDelta)
-		 */
+        void addSource(IResource resource) {
+            // Update our list of project ASTs to analyze
+            if(isBanjoSource(resource)) {
+                banjoSourceFiles = banjoSourceFiles.insert((IFile) resource);
+                numberOfSourceFiles++;
+            }
+        }
+
+        abstract public void collectSources() throws CoreException;
+    }
+
+    class BanjoBuilderDeltaVisitor extends BanjoBuilderVisitor implements IResourceDeltaVisitor {
+
+        private IResourceDelta delta;
+
+        public BanjoBuilderDeltaVisitor(IResourceDelta delta) {
+            this.delta = delta;
+        }
+
+        @Override
+        public void collectSources() throws CoreException {
+            delta.accept(this);
+        }
+
 		@Override
 		public boolean visit(IResourceDelta delta) throws CoreException {
 			final IResource resource = delta.getResource();
-			switch (delta.getKind()) {
-			case IResourceDelta.ADDED:
-				// handle added resource
-				build(resource, monitor);
-				break;
-			case IResourceDelta.REMOVED:
-				// handle removed resource
-				break;
-			case IResourceDelta.CHANGED:
-				// handle changed resource
-				build(resource, monitor);
-				break;
-			}
+            if((delta.getKind() & (IResourceDelta.ADDED | IResourceDelta.REMOVED | IResourceDelta.CHANGED)) != 0)
+                addSource(resource);
 			//return true to continue visiting children.
 			return true;
 		}
 	}
 
-	class BanjoBuilderResourceVisitor implements IResourceVisitor {
-		private IProgressMonitor monitor;
+    class BanjoBuilderProjectVisitor extends BanjoBuilderVisitor implements IResourceVisitor {
+        private IProject project;
 
-		public BanjoBuilderResourceVisitor(IProgressMonitor monitor) {
-			this.monitor = monitor;
-		}
+        public BanjoBuilderProjectVisitor(IProject project) {
+            this.project = project;
+        }
 
-		@Override
+        @Override
 		public boolean visit(IResource resource) {
-			build(resource, monitor);
+            addSource(resource);
 			//return true to continue visiting children.
 			return true;
 		}
+
+        @Override
+        public void collectSources() throws CoreException {
+            project.accept(this);
+        }
 	}
 
 	public static final String BUILDER_ID = "banjo.editor.banjoBuilder";
 	private static final String MARKER_TYPE = IMarker.PROBLEM;
-	public static final QualifiedName AST_CACHE_PROPERTY = new QualifiedName(Activator.PLUGIN_ID, "astCache");
     public static ExecutorService executor = Executors.newCachedThreadPool();
 
-	private static void addMarker(IFile file, String message, FileRange range, int severity) {
+    private static void addMarker(SourceFileRange sfr, String message, int severity) {
+        // Only try to add markers if the source file came from eclipse
+        if(!(sfr.sourceFile instanceof EclipseWorkspacePath))
+            return;
+
+        IFile file = ((EclipseWorkspacePath) sfr.sourceFile).getFile();
+
+        // Only try to add a marker to a file that still exists
+        if(!file.exists())
+            return;
+
+        FileRange range = sfr.getFileRange();
 		try {
 			final IMarker marker = file.createMarker(MARKER_TYPE);
 			marker.setAttribute(IMarker.MESSAGE, message);
@@ -149,131 +173,75 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 	@Override
 	protected void clean(IProgressMonitor monitor) throws CoreException {
 		// delete markers set and files created
-		getProject().deleteMarkers(MARKER_TYPE, true, IResource.DEPTH_INFINITE);
-		getProject().accept(new IResourceVisitor() {
-
-			@Override
-			public boolean visit(IResource resource) throws CoreException {
-				if(resource instanceof IFile) {
-					clearAstCache((IFile)resource);
-				}
-				return true;
-			}
-		});
+        monitor.beginTask("Remove markers", 1000);
+        try {
+            getProject().deleteMarkers(MARKER_TYPE, true, IResource.DEPTH_INFINITE);
+            monitor.worked(1000);
+        } finally {
+            monitor.done();
+        }
 	}
 
-	void build(IResource resource, IProgressMonitor monitor) {
-		if (resource instanceof IFile && resource.getName().endsWith(".banjo")) {
-			final IFile file = (IFile) resource;
-			deleteMarkers(file);
-			clearAstCache(file);
-			IFileInfo fileInfo;
-			try {
-				fileInfo = EFS.getStore(file.getLocationURI()).fetchInfo();
-			} catch (final CoreException e) {
-				Activator.log(e.getStatus());
-				return;
-			}
-			if(fileInfo.getLength() > Integer.MAX_VALUE) {
-				// TODO Report error
-				Activator.log("File too large to parse; files must be less than 2GB.");
-				return;
-			}
+    Option<CoreExpr> buildFile(IFile file) {
+        EclipseWorkspaceFileSystem fs = new EclipseWorkspaceFileSystem(new EclipseWorkspaceFileSystemProvider(), this.getProject().getWorkspace(), null);
+        final Path filePath = fs.getPath(file);
 
-            EclipseWorkspaceFileSystem fs = new EclipseWorkspaceFileSystem(new EclipseWorkspaceFileSystemProvider(), this.getProject().getWorkspace(), null);
-            // Load the whole project surrounding that file
-            final Path filePath = fs.getPath(file);
+        // If the file exists, we'll show error markers for any parse errors
+        // If the file doesn't exist, this was called in response to a deletion,
+        // so we still want to "build" the project the file was part of.
+        if(file.exists()) {
+            deleteMarkers(file);
+            IFileInfo fileInfo;
+            try {
+                fileInfo = EFS.getStore(file.getLocationURI()).fetchInfo();
+            } catch(final CoreException e) {
+                Activator.log(e.getStatus());
+                return Option.none();
+            }
+            if(fileInfo.getLength() > Integer.MAX_VALUE) {
+                // TODO Report error
+                Activator.log("File too large to parse; files must be less than 2GB.");
+                return Option.none();
+            }
 
             // Check if the file parses first, if it doesn't even parse we can
             // skip the later steps
             List<BadExpr> parseProblems = SourceExprFromFile.forPath(filePath).getProblems();
-            if(!parseProblems.isEmpty()) {
-                addMarkersForProblems(file, parseProblems);
-            } else {
-                List<Path> paths = CoreExprFactory.projectSourcePathsForFile(filePath);
-                CoreExpr projectAst = CoreExprFactory.INSTANCE.loadFromDirectories(paths);
-                addMarkers(file, projectAst);
-            }
-		}
+            if(addMarkersForProblems(parseProblems))
+                return Option.none();
+            if(addDesugarProblemMarkers(CoreExprFromFile.forPath(filePath)))
+                return Option.none();
+        }
+
+        // Return the bigger AST this file is part of - it'll be analyzed
+        // further in the main build process
+        List<Path> paths = CoreExprFactory.projectSourcePathsForFile(filePath);
+        CoreExpr projectAst = CoreExprFactory.INSTANCE.loadFromDirectories(paths);
+        return Option.some(projectAst);
 	}
 
-    public void addMarkers(final IFile file, final CoreExpr projectAst) {
-		try {
-            file.setSessionProperty(AST_CACHE_PROPERTY, projectAst);
-		} catch (final CoreException e) {
-			Activator.log(e.getStatus());
-		}
-
-        if(addDesugarProblemMarkers(file, projectAst))
-            return;
-
-        // TODO Def/ref analysis needs type information now ... only the
-        // full-blown type directed analysis will work now
-        // addDefRefProblemMarkers(file, projectAst);
-
-        if(addExampleProblemMarkers(file, projectAst))
-            return;
-
-        if(addUnitTestProblemMarkers(file, projectAst))
-            return;
-
-	}
-
-    public boolean addDefRefProblemMarkers(final IFile file, CoreExpr projectAst) {
-        final List<BadExpr> problems = callAsync(() -> DefRefAnalyser.problems(projectAst), List.nil());
-        return addMarkersForProblems(file, problems);
+    public boolean isBanjoSource(IResource resource) {
+        return resource instanceof IFile && resource.getName().endsWith(".banjo") && !resource.getName().startsWith(".");
     }
-    public boolean addDesugarProblemMarkers(final IFile file, CoreExpr projectAst) {
+
+    public boolean addDesugarProblemMarkers(CoreExpr projectAst) {
         List<BadExpr> problems = getDesugarProblems(projectAst);
-        return addMarkersForProblems(file, problems);
+        return addMarkersForProblems(problems);
     }
 
-    public boolean addMarkersForProblems(final IFile file, List<BadExpr> problems) {
-        final Path fileWeAreMarking = EclipseWorkspacePath.of(file, null);
+    public boolean addMarkersForProblems(List<BadExpr> problems) {
         boolean addedMarker = false;
 		for(final BadExpr problem : problems) {
-            Set<SourceFileRange> rangesInTargetFile = problem.getSourceFileRanges().filter(r -> r.getSourceFile().equals(fileWeAreMarking));
-            if(rangesInTargetFile.isEmpty())
-                continue;
-            SourceFileRange r = rangesInTargetFile.iterator().next();
-            addMarker(file, problem.getMessage(), r.getFileRange(), IMarker.SEVERITY_ERROR);
-            addedMarker = true;
+            SourceFileRange r = SourceFileRange.compactSet(problem.getSourceFileRanges()).iterator().next();
+            addMarker(r, problem.getMessage(), IMarker.SEVERITY_ERROR);
+            if(r.sourceFile instanceof EclipseWorkspacePath) {
+                IFile file = ((EclipseWorkspacePath) r.sourceFile).getFile();
+                if(file != null) {
+                    addedMarker = true;
+                }
+            }
 		}
         return addedMarker;
-    }
-
-    public boolean addExampleProblemMarkers(final IFile file, CoreExpr projectAst) {
-        Callable<List<CoreExpr>> gatherer = () -> TestAndExampleGatherer.findExamples(projectAst);
-        return addTestFailureMarkers(file, gatherer);
-    }
-
-    public boolean addUnitTestProblemMarkers(final IFile file, CoreExpr projectAst) {
-        Callable<List<CoreExpr>> gatherer = () -> TestAndExampleGatherer.findTests(projectAst);
-        return addTestFailureMarkers(file, gatherer);
-    }
-
-    public boolean addTestFailureMarkers(final IFile file, Callable<List<CoreExpr>> gatherer) throws Error {
-        List<CoreExpr> tests = callAsync(gatherer, List.nil());
-        if(tests.isEmpty())
-            return false;
-        final Path fileWeAreMarking = EclipseWorkspacePath.of(file, null);
-        Environment environment = Environment.forSourcePath(fileWeAreMarking);
-        boolean failedTest = false;
-        for(CoreExpr e : tests) {
-            CoreExpr noscope = TestAndExampleGatherer.stripScope(e);
-            Set<SourceFileRange> rangesInTargetFile = noscope.getSourceFileRanges().filter(r -> r.getSourceFile().equals(fileWeAreMarking));
-            if(rangesInTargetFile.isEmpty())
-                continue;
-            SourceFileRange r = rangesInTargetFile.iterator().next();
-            boolean success = callAsync(() -> environment.eval(e).isTruthy(), true);
-            if(!success) {
-                failedTest = true;
-                addMarker(file, "Failed: " + noscope.toSource(), r.getFileRange(), IMarker.SEVERITY_ERROR);
-            } else {
-                addMarker(file, "Passed: " + noscope.toSource(), r.getFileRange(), IMarker.SEVERITY_INFO);
-            }
-        }
-        return failedTest;
     }
 
     public List<BadExpr> getDesugarProblems(CoreExpr projectAst) throws Error {
@@ -315,19 +283,10 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 		for(final BadExpr problem : parseResult.getProblems()) {
 			haveParseProblems = true;
 			problem.getSourceFileRanges().forEach(r -> {
-				addMarker(file, problem.getMessage(), r.getFileRange(), IMarker.SEVERITY_ERROR);
+                addMarker(r, problem.getMessage(), IMarker.SEVERITY_ERROR);
 			});
 		}
 		return haveParseProblems;
-	}
-
-
-	public static void clearAstCache(IFile file) {
-		try {
-			file.setSessionProperty(AST_CACHE_PROPERTY, null);
-		} catch (final CoreException e) {
-			Activator.log(e.getStatus());
-		}
 	}
 
 	private void deleteMarkers(IFile file) {
@@ -338,16 +297,90 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 		}
 	}
 
-	protected void fullBuild(final IProgressMonitor monitor) {
-		try {
-			clean(monitor);
-			getProject().accept(new BanjoBuilderResourceVisitor(monitor));
-		} catch (final CoreException e) {
-			Activator.log(e.getStatus());
-		}
-	}
+    private Set<CoreExpr> buildSources(Set<IFile> banjoSourceFiles, int numberOfSourceFiles, final IProgressMonitor monitor) {
+        monitor.beginTask("Checking syntax", numberOfSourceFiles);
+        try {
+            Set<CoreExpr> affectedProjectAsts = Set.empty(CoreExpr.coreExprOrd);
+            for(IFile file : banjoSourceFiles) {
+                if(monitor.isCanceled() || this.isInterrupted())
+                    break;
+                monitor.subTask("Checking syntax for " + file.getFullPath());
+                try {
+                    Option<CoreExpr> ast = buildFile(file);
+                    if(ast.isSome())
+                        affectedProjectAsts = affectedProjectAsts.insert(ast.some());
+                } finally {
+                    monitor.worked(1);
+                }
+            }
+            return affectedProjectAsts;
+        } finally {
+            monitor.done();
+        }
+    }
 
-	protected void incrementalBuild(IResourceDelta delta, IProgressMonitor monitor) throws CoreException {
-		delta.accept(new BanjoBuilderDeltaVisitor(monitor));
+    protected void projectBuild(BanjoBuilderVisitor visitor, final IProgressMonitor monitor) {
+        monitor.beginTask("Building Banjo Project", 10100);
+        try {
+            visitor.collectSources();
+            monitor.worked(100);
+            Set<CoreExpr> projectAsts = buildSources(
+                visitor.banjoSourceFiles,
+                visitor.numberOfSourceFiles,
+                new SubProgressMonitor(monitor, 2000));
+            TreeMap<CoreExpr, P2<List<CoreExpr>, List<CoreExpr>>> testsAndExamples =
+                TreeMap.treeMap(CoreExpr.coreExprOrd, projectAsts.toList().map(
+                    (projectAst) -> P.p(projectAst, 
+                        P.p(TestAndExampleGatherer.findTests(projectAst), TestAndExampleGatherer.findExamples(projectAst)))));
+            int totalTestsAndExamples = testsAndExamples.values().foldRight((a, b) -> a._1().length() + a._2().length() + b, 0);
+            if(totalTestsAndExamples > 0) {
+                int step = 8000 / totalTestsAndExamples;
+                for(P2<CoreExpr, P2<List<CoreExpr>, List<CoreExpr>>> p : testsAndExamples) {
+                    if(monitor.isCanceled() || this.isInterrupted())
+                        return;
+                    CoreExpr projectAst = p._1();
+                    List<CoreExpr> tests = p._2()._1();
+                    List<CoreExpr> examples = p._2()._2();
+                    Environment env = Environment.forProjectAst(projectAst);
+                    runTests(env, tests, monitor, step);
+                    runTests(env, examples, monitor, step);
+                }
+            } else {
+                monitor.worked(8000);
+            }
+        } catch (final CoreException e) {
+            Activator.log(e.getStatus());
+        } finally {
+            monitor.done();
+        }
+    }
+
+    public void runTests(Environment env, List<CoreExpr> tests, final IProgressMonitor monitor, int step) throws Error {
+        for(CoreExpr e : tests) {
+            if(monitor.isCanceled() || this.isInterrupted())
+                return;
+            CoreExpr noscope = TestAndExampleGatherer.stripScope(e);
+            Set<SourceFileRange> ranges =
+                SourceFileRange.compactSet(noscope.getSourceFileRanges()).filter(r -> r.getSourceFile() instanceof EclipseWorkspacePath);
+            if(ranges.isEmpty()) {
+                continue;
+            }
+            SourceFileRange r = ranges.iterator().next();
+            boolean success = callAsync(() -> env.eval(e).isTruthy(), true);
+            if(!success) {
+                addMarker(r, "Failed: " + noscope.toSource(), IMarker.SEVERITY_ERROR);
+            } else {
+                addMarker(r, "Passed: " + noscope.toSource(), IMarker.SEVERITY_INFO);
+            }
+            monitor.worked(step);
+        }
+    }
+
+    protected void fullBuild(final IProgressMonitor monitor) {
+        projectBuild(new BanjoBuilderProjectVisitor(getProject()), monitor);
+    }
+
+    protected void incrementalBuild(IResourceDelta delta, IProgressMonitor monitor) throws CoreException {
+        projectBuild(new BanjoBuilderDeltaVisitor(delta), monitor);
 	}
 }
