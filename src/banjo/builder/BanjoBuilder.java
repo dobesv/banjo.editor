@@ -3,7 +3,9 @@ package banjo.builder;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.UnsupportedEncodingException;
+import java.net.URISyntaxException;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -24,22 +26,38 @@ import org.eclipse.core.resources.IResourceDeltaVisitor;
 import org.eclipse.core.resources.IResourceVisitor;
 import org.eclipse.core.resources.IncrementalProjectBuilder;
 import org.eclipse.core.runtime.CoreException;
+import org.eclipse.core.runtime.FileLocator;
 import org.eclipse.core.runtime.IProgressMonitor;
+import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.SubProgressMonitor;
+import org.osgi.framework.Bundle;
 
 import banjo.editor.Activator;
+import banjo.eval.Fail;
+import banjo.eval.SlotNotFound;
 import banjo.eval.environment.Environment;
 import banjo.expr.BadExpr;
+import banjo.expr.core.BadCoreExpr;
+import banjo.expr.core.BaseCoreExprVisitor;
+import banjo.expr.core.Call;
 import banjo.expr.core.CoreErrorGatherer;
 import banjo.expr.core.CoreExpr;
 import banjo.expr.core.CoreExprFactory;
 import banjo.expr.core.CoreExprFromFile;
+import banjo.expr.core.Let;
+import banjo.expr.core.Projection;
 import banjo.expr.core.TestAndExampleGatherer;
+import banjo.expr.free.FreeExpression;
+import banjo.expr.free.FreeExpressionFactory;
+import banjo.expr.source.Operator;
 import banjo.expr.source.SourceExpr;
 import banjo.expr.source.SourceExprFromFile;
+import banjo.expr.token.BadIdentifier;
+import banjo.expr.token.Identifier;
 import banjo.expr.util.FileRange;
 import banjo.expr.util.ParserReader;
 import banjo.expr.util.SourceFileRange;
+import banjo.value.Value;
 import fj.Ord;
 import fj.P;
 import fj.P2;
@@ -215,10 +233,25 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
 
         // Return the bigger AST this file is part of - it'll be analyzed
         // further in the main build process
-        List<Path> paths = CoreExprFactory.projectSourcePathsForFile(filePath);
+        Option<Path> projectRoot = CoreExprFactory.projectRootForPath(filePath);
+        List<Path> langBundlePath = langBundleSearchPath();
+        List<Path> paths = langBundlePath.append(projectRoot.toList());
         CoreExpr projectAst = CoreExprFactory.INSTANCE.loadFromDirectories(paths);
         return Option.some(projectAst);
 	}
+
+    public List<Path> langBundleSearchPath() {
+        try {
+            Bundle langBundle = Platform.getBundle("banjo.banjo-lang");
+            if(langBundle == null)
+                return List.nil();
+            return List.single(Paths.get(FileLocator.resolve(langBundle.getResource("/")).toURI()));
+        } catch(URISyntaxException e) {
+            return List.nil();
+        } catch(IOException e) {
+            return List.nil();
+        }
+    }
 
     public boolean isBanjoSource(IResource resource) {
         return resource instanceof IFile && resource.getName().endsWith(".banjo") && !resource.getName().startsWith(".");
@@ -319,6 +352,15 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
         }
     }
 
+    /**
+     * Common code for incremental and full builds.
+     * 
+     * @param visitor
+     *            Gathers the list of files to parse
+     * @param monitor
+     *            Progress monitor, used to give the user a clue about how much
+     *            longer this might take
+     */
     protected void projectBuild(BanjoBuilderVisitor visitor, final IProgressMonitor monitor) {
         monitor.beginTask("Building Banjo Project", 10100);
         try {
@@ -327,14 +369,14 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
             Set<CoreExpr> projectAsts = buildSources(
                 visitor.banjoSourceFiles,
                 visitor.numberOfSourceFiles,
-                new SubProgressMonitor(monitor, 2000));
+                new SubProgressMonitor(monitor, 5000));
             TreeMap<CoreExpr, P2<List<CoreExpr>, List<CoreExpr>>> testsAndExamples =
                 TreeMap.treeMap(CoreExpr.coreExprOrd, projectAsts.toList().map(
                     (projectAst) -> P.p(projectAst, 
                         P.p(TestAndExampleGatherer.findTests(projectAst), TestAndExampleGatherer.findExamples(projectAst)))));
             int totalTestsAndExamples = testsAndExamples.values().foldRight((a, b) -> a._1().length() + a._2().length() + b, 0);
             if(totalTestsAndExamples > 0) {
-                int step = 8000 / totalTestsAndExamples;
+                int step = 5000 / totalTestsAndExamples;
                 for(P2<CoreExpr, P2<List<CoreExpr>, List<CoreExpr>>> p : testsAndExamples) {
                     if(monitor.isCanceled() || this.isInterrupted())
                         return;
@@ -346,7 +388,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
                     runTests(env, examples, monitor, step);
                 }
             } else {
-                monitor.worked(8000);
+                monitor.worked(5000);
             }
         } catch (final CoreException e) {
             Activator.log(e.getStatus());
@@ -355,22 +397,125 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
         }
     }
 
+    /**
+     * Try to give a useful indication of why an example or test wasn't true.
+     * 
+     * @param env
+     * @param test
+     * @param noscope
+     * @return
+     */
+    public static String explainFailure(Environment env, CoreExpr test, CoreExpr noscope) {
+        return explainFailure(env, test, noscope, TreeMap.empty(Ord.stringOrd));
+    }
+
+    public static String explainFailure(Environment env, CoreExpr test, CoreExpr noscope, TreeMap<String, CoreExpr> defs) {
+        Value v = env.eval(test);
+        if(v instanceof Fail) {
+            return ((Fail) v).getMessage();
+        }
+        Value andSlot = v.slot(Operator.LOGICAL_AND.methodName);
+        if(andSlot instanceof Fail) {
+            if(andSlot instanceof SlotNotFound) {
+                return "Expected a true or false value; got " + v;
+            }
+            return ((Fail) andSlot).getMessage();
+        }
+        return test.acceptVisitor(new BaseCoreExprVisitor<String>() {
+            @Override
+            public String fallback() {
+                return "Expected a boolean expression, found " + noscope.toSource();
+            }
+            
+            @Override
+            public String badExpr(BadCoreExpr badExpr) {
+                return badExpr.toString();
+            }
+
+            @Override
+            public String identifier(Identifier identifier) {
+                Option<CoreExpr> def = defs.get(identifier.id);
+                if(def.isSome()) {
+                    return def.some().acceptVisitor(this);
+                }
+                return this.fallback();
+            }
+
+            @Override
+            public String call(Call call) {
+                Value target = env.eval(call.target);
+                if(target instanceof Fail) {
+                    return call.target.toSource() + ": " + ((Fail) target).getMessage();
+                }
+                for(CoreExpr arg : call.args) {
+                    Value argValue = env.eval(arg);
+                    if(arg instanceof Fail)
+                        return arg.toSource() + ": " + ((Fail) argValue).getMessage();
+                }
+                return call.target.acceptVisitor(new BaseCoreExprVisitor<String>() {
+                    @Override
+                    public String fallback() {
+                        return "Result of "+call+" is not true";
+                    }
+
+                    @Override
+                    public String projection(Projection projection) {
+                        // Check for the common case of x == y
+                        if(call.args.isSingle() && projection.projection.eql(Operator.EQ.methodNameKey)) {
+                            Value lhs = env.eval(projection.object);
+                            Value rhs = env.eval(call.args.head());
+                            
+                            return projection.object + " != " + call.args.head() + " since " + lhs + " != " + rhs;
+                        } else {
+                            return fallback();
+                        }
+                    }
+                });
+            }
+
+            @Override
+            public String badIdentifier(BadIdentifier badIdentifier) {
+                return badIdentifier.toString();
+            }
+
+            @Override
+            public String let(Let let) {
+                List<P2<String, CoreExpr>> stringExprBindings = let.bindings.map(P2.map1_(Identifier::getId));
+                List<P2<String, FreeExpression>> bindings1 = stringExprBindings.map(P2.map2_(FreeExpressionFactory::apply));
+                Environment env2 = env.let(bindings1);
+                return explainFailure(env2, let.body, noscope, defs.union(stringExprBindings));
+            }
+
+            @Override
+            public String projection(Projection projection) {
+                Value objectValue = env.eval(projection.object);
+                if(objectValue instanceof Fail) {
+                    return projection.object.toSource() + ": " + ((Fail) objectValue).getMessage();
+                }
+                if(projection.base) {
+                    return this.fallback();
+                }
+                Environment env2 = new Environment(objectValue, env.projectRootObject);
+                return explainFailure(env2, projection.projection, noscope, TreeMap.empty(Ord.stringOrd));
+            }
+        });
+    }
+
     public void runTests(Environment env, List<CoreExpr> tests, final IProgressMonitor monitor, int step) throws Error {
-        for(CoreExpr e : tests) {
+        for(CoreExpr test : tests) {
             if(monitor.isCanceled() || this.isInterrupted())
                 return;
-            CoreExpr noscope = TestAndExampleGatherer.stripScope(e);
+            CoreExpr noscope = TestAndExampleGatherer.stripScope(test);
             Set<SourceFileRange> ranges =
                 SourceFileRange.compactSet(noscope.getSourceFileRanges()).filter(r -> r.getSourceFile() instanceof EclipseWorkspacePath);
             if(ranges.isEmpty()) {
                 continue;
             }
             SourceFileRange r = ranges.iterator().next();
-            boolean success = callAsync(() -> env.eval(e).isTruthy(), true);
+            boolean success = callAsync(() -> env.eval(test).isTruthy(), true);
             if(!success) {
-                addMarker(r, "Failed: " + noscope.toSource(), IMarker.SEVERITY_ERROR);
-            } else {
-                addMarker(r, "Passed: " + noscope.toSource(), IMarker.SEVERITY_INFO);
+                String reason = callAsync(() -> explainFailure(env, test, noscope), "Not true: " + noscope);
+                addMarker(r, reason, IMarker.SEVERITY_ERROR);
             }
             monitor.worked(step);
         }
