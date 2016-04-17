@@ -414,7 +414,8 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
         if(v instanceof Fail) {
             return ((Fail) v).getMessage();
         }
-        Value andSlot = v.slot(Operator.LOGICAL_AND.methodName);
+        List<Value> trace = List.nil();
+        Value andSlot = v.slot(trace, Operator.LOGICAL_AND.methodName);
         if(andSlot instanceof Fail) {
             if(andSlot instanceof SlotNotFound) {
                 return "Expected a true or false value; got " + v;
@@ -512,7 +513,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
                 continue;
             }
             SourceFileRange r = ranges.iterator().next();
-            boolean success = callAsync(() -> env.eval(test).isTruthy(), true);
+            boolean success = callAsync(() -> env.eval(test).isTruthy(List.nil()), true);
             if(!success) {
                 String reason = callAsync(() -> explainFailure(env, test, noscope), "Not true: " + noscope);
                 addMarker(r, reason, IMarker.SEVERITY_ERROR);
