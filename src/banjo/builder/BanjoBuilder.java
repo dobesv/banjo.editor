@@ -373,7 +373,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
             TreeMap<CoreExpr, P2<List<CoreExpr>, List<CoreExpr>>> testsAndExamples =
                 TreeMap.treeMap(CoreExpr.coreExprOrd, projectAsts.toList().map(
                     (projectAst) -> P.p(projectAst, 
-                        P.p(TestAndExampleGatherer.findTests(projectAst), TestAndExampleGatherer.findExamples(projectAst)))));
+                        P.p(TestAndExampleGatherer.findTests(projectAst).toList(), TestAndExampleGatherer.findExamples(projectAst).toList()))));
             int totalTestsAndExamples = testsAndExamples.values().foldRight((a, b) -> a._1().length() + a._2().length() + b, 0);
             if(totalTestsAndExamples > 0) {
                 int step = 5000 / totalTestsAndExamples;
@@ -496,7 +496,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
                 if(projection.base) {
                     return this.fallback();
                 }
-                Environment env2 = new Environment(objectValue, env.projectRootObject);
+                Environment env2 = env.projection(objectValue);
                 return explainFailure(env2, projection.projection, noscope, TreeMap.empty(Ord.stringOrd));
             }
         });
@@ -513,7 +513,7 @@ public class BanjoBuilder extends IncrementalProjectBuilder {
                 continue;
             }
             SourceFileRange r = ranges.iterator().next();
-            boolean success = callAsync(() -> env.eval(test).isTruthy(List.nil()), true);
+            boolean success = callAsync(() -> env.eval(test).isTrue(List.nil()), true);
             if(!success) {
                 String reason = callAsync(() -> explainFailure(env, test, noscope), "Not true: " + noscope);
                 addMarker(r, reason, IMarker.SEVERITY_ERROR);
